@@ -1,0 +1,17 @@
+# ngrok configuration for phone call agent
+# Run both HTTP and WebSocket tunnels from one session
+
+version: "2"
+authtoken: 2x9IoMEZhfG3sBdu6TCKfkBaLok_3PnC7catbAjj5Njnjx3UV
+
+tunnels:
+  web:
+    proto: http
+    addr: 5002
+    # This is for Flask webhooks
+  
+  websocket:
+    proto: http
+    addr: 5001
+    # This is for Twilio Media Streams WebSocket
+
