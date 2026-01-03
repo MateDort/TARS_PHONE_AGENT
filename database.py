@@ -511,6 +511,19 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_call_goal_by_sid(self, call_sid: str) -> Optional[Dict]:
+        """Get a specific call goal by Twilio Call SID.
+
+        Args:
+            call_sid: Twilio Call SID
+
+        Returns:
+            Call goal dictionary or None
+        """
+        cursor = self.conn.execute("SELECT * FROM call_goals WHERE call_sid = ?", (call_sid,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
     def get_pending_call_goals(self) -> List[Dict]:
         """Get all pending call goals.
 

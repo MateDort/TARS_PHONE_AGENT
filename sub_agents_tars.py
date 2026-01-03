@@ -693,6 +693,15 @@ class OutboundCallAgent(SubAgent):
         alternative_options = args.get("alternative_options")
         call_now = args.get("call_now", True)
 
+        # If no phone number provided, try to look it up from contact_name
+        if not phone_number and contact_name and contact_name != "Unknown":
+            contact = self.db.search_contact(contact_name)
+            if contact and contact.get('phone'):
+                phone_number = contact['phone']
+                logger.info(f"Looked up phone number for {contact_name}: {phone_number}")
+            else:
+                return f"I couldn't find a phone number for {contact_name}, sir. Please provide a phone number or save their contact information first."
+
         if not phone_number or not goal_description:
             return "Please provide both phone_number and goal_description, sir."
 
@@ -725,7 +734,7 @@ class OutboundCallAgent(SubAgent):
                 self.db.update_call_goal(goal_id, call_sid=call_sid, status='in_progress')
                 logger.info(f"Initiated call for goal {goal_id}: {call_sid}")
 
-                return f"Call initiated to {contact_name}, sir. Goal: {goal_description}"
+                return f"Understood, sir. I'll ring {contact_name} now to {goal_description}. I'll hang up with you and call you back once I've spoken with them. Goodbye for now."
             except Exception as e:
                 logger.error(f"Error making call: {e}")
                 self.db.fail_call_goal(goal_id, f"Failed to initiate call: {str(e)}")
@@ -738,25 +747,40 @@ class OutboundCallAgent(SubAgent):
                              preferred_time: str = None, alternative_options: str = None) -> str:
         """Format goal information into a message for TARS."""
         message_parts = [
-            f"CALL OBJECTIVE for {contact_name}:",
-            f"Type: {goal_type}",
-            f"Goal: {goal_description}"
+            f"=== OUTBOUND CALL TO {contact_name.upper()} ===",
+            "",
+            f"YOUR TASK: {goal_description}",
+            ""
         ]
 
         if preferred_date and preferred_time:
-            message_parts.append(f"Preferred: {preferred_date} at {preferred_time}")
+            message_parts.append(f"Preferred time: {preferred_date} at {preferred_time}")
         elif preferred_date:
             message_parts.append(f"Preferred date: {preferred_date}")
         elif preferred_time:
             message_parts.append(f"Preferred time: {preferred_time}")
 
         if alternative_options:
-            message_parts.append(f"Alternatives: {alternative_options}")
+            message_parts.append(f"Backup options: {alternative_options}")
 
-        message_parts.append(
-            "\nIMPORTANT: If the preferred time is not available, "
-            "gather alternative times and text them to Máté for approval."
-        )
+        message_parts.extend([
+            "",
+            "CRITICAL INSTRUCTIONS:",
+            f"1. You are NOW speaking with {contact_name} - NOT with Máté",
+            f"2. Greet {contact_name} warmly and naturally (Hello, hi there, etc.)",
+            "3. Introduce yourself: 'This is TARS, Máté's assistant'",
+            f"4. Have a NATURAL, CONVERSATIONAL chat with {contact_name}",
+            "5. Gently guide the conversation toward accomplishing your task",
+            "6. Be friendly, British, personable - like chatting with a friend",
+            "7. If booking appointment and time unavailable, get alternatives",
+            "8. When done, say a warm goodbye and hang up",
+            "",
+            "AFTER THIS CALL ENDS:",
+            "- DO NOT send a text message to Máté",
+            "- The system will automatically handle notifying Máté",
+            "",
+            "Remember: Be conversational, natural, and treat this as a real person-to-person call!"
+        ])
 
         return "\n".join(message_parts)
 

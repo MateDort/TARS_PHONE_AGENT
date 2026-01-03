@@ -202,13 +202,15 @@ Be conversational, friendly, and helpful."""
                             # AI's spoken text
                             if response.server_content.output_transcription:
                                 text = response.server_content.output_transcription.text
+                                print(f"\n🤖 TARS: {text}")
                                 logger.info(f"AI: {text}")
                                 if self.on_text_response:
                                     await self.on_text_response(text)
-                            
+
                             # User's spoken text
                             if hasattr(response.server_content, 'input_transcription') and response.server_content.input_transcription:
                                 user_text = response.server_content.input_transcription.text
+                                print(f"\n👤 USER: {user_text}")
                                 logger.info(f"User: {user_text}")
                                 if self.on_user_transcript:
                                     await self.on_user_transcript(user_text)
@@ -261,34 +263,38 @@ Be conversational, friendly, and helpful."""
         for fc in tool_call.function_calls:
             fn_name = fc.name
             args = fc.args
-            
+
+            print(f"\n⚙️  FUNCTION CALL: {fn_name}")
+            print(f"   Args: {args}")
             logger.info(f"Function call: {fn_name}({args})")
-            
+
             # Check if we have a handler for this function
             if fn_name in self.function_handlers:
                 try:
                     # Call the handler
                     handler = self.function_handlers[fn_name]
-                    
+
                     # Execute handler (could be sync or async)
                     if asyncio.iscoroutinefunction(handler):
                         result = await handler(args)
                     else:
                         result = handler(args)
-                    
+
                     # Send response back to Gemini
                     function_response = types.FunctionResponse(
                         id=fc.id,
                         name=fn_name,
                         response={"result": str(result)}
                     )
-                    
+
                     await self.session.send(input=function_response)
+                    print(f"   ✅ Result: {result}")
                     logger.info(f"Function {fn_name} completed: {result}")
                     
                 except Exception as e:
+                    print(f"   ❌ Error: {e}")
                     logger.error(f"Error executing function {fn_name}: {e}")
-                    
+
                     # Send error response
                     error_response = types.FunctionResponse(
                         id=fc.id,
@@ -297,6 +303,7 @@ Be conversational, friendly, and helpful."""
                     )
                     await self.session.send(input=error_response)
             else:
+                print(f"   ⚠️  No handler registered for function: {fn_name}")
                 logger.warning(f"No handler registered for function: {fn_name}")
                 
                 # Send error response
