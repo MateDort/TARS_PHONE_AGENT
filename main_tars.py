@@ -120,11 +120,12 @@ class TARSPhoneAgent:
         """Register all sub-agents with the Gemini client."""
         logger.info("Registering sub-agents...")
 
-        # Get all agents (pass database, messaging handler, and system reloader callback)
+        # Get all agents (pass database, messaging handler, twilio handler, and system reloader callback)
         agents = get_all_agents(
             self.db,
             self.messaging_handler,
-            self._reload_system_instruction
+            self._reload_system_instruction,
+            self.twilio_handler
         )
 
         # Get function declarations
@@ -137,6 +138,7 @@ class TARSPhoneAgent:
             "lookup_contact": agents["contacts"],
             "send_notification": agents["notification"],
             "send_message": agents.get("message"),  # May be None if messaging not available
+            "make_goal_call": agents.get("outbound_call"),  # May be None if twilio not available
         }
 
         for declaration in declarations:

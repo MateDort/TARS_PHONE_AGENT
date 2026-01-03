@@ -644,8 +644,167 @@ class NotificationAgent(SubAgent):
             return f"{get_text('notification_sent')}: {message}"
 
 
+class OutboundCallAgent(SubAgent):
+    """Handles goal-based outbound calls with specific objectives."""
+
+    def __init__(self, db: Database, twilio_handler):
+        super().__init__(
+            name="outbound_call",
+            description="Makes goal-based outbound calls to accomplish specific tasks"
+        )
+        self.db = db
+        self.twilio_handler = twilio_handler
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Handle outbound call request.
+
+        Args:
+            args: {
+                "action": "schedule|list|cancel",
+                "phone_number": str,
+                "contact_name": str,
+                "goal_type": str (appointment, inquiry, followup, etc.),
+                "goal_description": str,
+                "preferred_date": str (optional, e.g., "Wednesday", "2026-01-08"),
+                "preferred_time": str (optional, e.g., "2pm", "afternoon"),
+                "alternative_options": str (optional, e.g., "Thursday or Friday afternoon"),
+                "call_now": bool (optional, default: True)
+            }
+        """
+        action = args.get("action", "schedule")
+
+        if action == "schedule":
+            return await self._schedule_call(args)
+        elif action == "list":
+            return await self._list_call_goals()
+        elif action == "cancel":
+            return await self._cancel_call(args)
+        else:
+            return f"Unknown action: {action}"
+
+    async def _schedule_call(self, args: Dict[str, Any]) -> str:
+        """Schedule a goal-based outbound call."""
+        phone_number = args.get("phone_number")
+        contact_name = args.get("contact_name", "Unknown")
+        goal_type = args.get("goal_type", "general")
+        goal_description = args.get("goal_description", "")
+        preferred_date = args.get("preferred_date")
+        preferred_time = args.get("preferred_time")
+        alternative_options = args.get("alternative_options")
+        call_now = args.get("call_now", True)
+
+        if not phone_number or not goal_description:
+            return "Please provide both phone_number and goal_description, sir."
+
+        # Save the call goal to database
+        goal_id = self.db.add_call_goal(
+            phone_number=phone_number,
+            contact_name=contact_name,
+            goal_type=goal_type,
+            goal_description=goal_description,
+            preferred_date=preferred_date,
+            preferred_time=preferred_time,
+            alternative_options=alternative_options
+        )
+
+        logger.info(f"Created call goal {goal_id} for {contact_name} ({phone_number})")
+
+        # Prepare goal message for TARS to use during the call
+        goal_message = self._format_goal_message(
+            contact_name, goal_type, goal_description,
+            preferred_date, preferred_time, alternative_options
+        )
+
+        # Make the call immediately if requested
+        if call_now:
+            try:
+                call_sid = self.twilio_handler.make_call(
+                    to_number=phone_number,
+                    reminder_message=goal_message
+                )
+                self.db.update_call_goal(goal_id, call_sid=call_sid, status='in_progress')
+                logger.info(f"Initiated call for goal {goal_id}: {call_sid}")
+
+                return f"Call initiated to {contact_name}, sir. Goal: {goal_description}"
+            except Exception as e:
+                logger.error(f"Error making call: {e}")
+                self.db.fail_call_goal(goal_id, f"Failed to initiate call: {str(e)}")
+                return f"Sorry sir, I couldn't initiate the call to {contact_name}. Error: {str(e)}"
+        else:
+            return f"Call goal saved, sir. Ready to call {contact_name} when you're ready."
+
+    def _format_goal_message(self, contact_name: str, goal_type: str,
+                             goal_description: str, preferred_date: str = None,
+                             preferred_time: str = None, alternative_options: str = None) -> str:
+        """Format goal information into a message for TARS."""
+        message_parts = [
+            f"CALL OBJECTIVE for {contact_name}:",
+            f"Type: {goal_type}",
+            f"Goal: {goal_description}"
+        ]
+
+        if preferred_date and preferred_time:
+            message_parts.append(f"Preferred: {preferred_date} at {preferred_time}")
+        elif preferred_date:
+            message_parts.append(f"Preferred date: {preferred_date}")
+        elif preferred_time:
+            message_parts.append(f"Preferred time: {preferred_time}")
+
+        if alternative_options:
+            message_parts.append(f"Alternatives: {alternative_options}")
+
+        message_parts.append(
+            "\nIMPORTANT: If the preferred time is not available, "
+            "gather alternative times and text them to Máté for approval."
+        )
+
+        return "\n".join(message_parts)
+
+    async def _list_call_goals(self) -> str:
+        """List pending call goals."""
+        goals = self.db.get_pending_call_goals()
+
+        if not goals:
+            return "No pending call goals, sir."
+
+        lines = ["Your pending call goals, sir:"]
+        for g in goals:
+            pref = ""
+            if g['preferred_date'] and g['preferred_time']:
+                pref = f" (preferred: {g['preferred_date']} at {g['preferred_time']})"
+            elif g['preferred_date']:
+                pref = f" (preferred: {g['preferred_date']})"
+
+            lines.append(
+                f"- {g['contact_name']}: {g['goal_description']}{pref}"
+            )
+
+        return "\n".join(lines)
+
+    async def _cancel_call(self, args: Dict[str, Any]) -> str:
+        """Cancel a pending call goal."""
+        goal_id = args.get("goal_id")
+        contact_name = args.get("contact_name")
+
+        if goal_id:
+            self.db.fail_call_goal(goal_id, "Cancelled by user")
+            return f"Call goal {goal_id} cancelled, sir."
+        elif contact_name:
+            # Find by contact name
+            goals = self.db.get_pending_call_goals()
+            match = next((g for g in goals if contact_name.lower() in g['contact_name'].lower()), None)
+
+            if match:
+                self.db.fail_call_goal(match['id'], "Cancelled by user")
+                return f"Call to {match['contact_name']} cancelled, sir."
+            else:
+                return f"Couldn't find a pending call for {contact_name}, sir."
+        else:
+            return "Please provide goal_id or contact_name to cancel, sir."
+
+
 # Agent registry
-def get_all_agents(db: Database, messaging_handler=None, system_reloader_callback=None) -> Dict[str, SubAgent]:
+def get_all_agents(db: Database, messaging_handler=None, system_reloader_callback=None, twilio_handler=None) -> Dict[str, SubAgent]:
     """Get all available sub-agents for TARS.
 
     Args:
@@ -666,6 +825,10 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     # Add message agent if messaging_handler is provided
     if messaging_handler:
         agents["message"] = MessageAgent(messaging_handler)
+
+    # Add outbound call agent if twilio_handler is provided
+    if twilio_handler:
+        agents["outbound_call"] = OutboundCallAgent(db, twilio_handler)
 
     return agents
 
@@ -830,6 +993,52 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action", "message"]
+            }
+        },
+        {
+            "name": "make_goal_call",
+            "description": "Make an outbound phone call with a specific goal/objective. Use this when Máté asks you to call someone to accomplish something (book appointment, make inquiry, follow up, etc.). Examples: 'call my dentist to book an appointment for Wednesday at 2pm', 'call the DMV to ask about my license renewal', 'call Helen to see if she wants to meet for dinner'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'schedule' (make call), 'list' (show pending calls), or 'cancel' (cancel scheduled call)"
+                    },
+                    "phone_number": {
+                        "type": "STRING",
+                        "description": "Phone number to call (for schedule action). Can look up from contacts if contact_name is provided instead."
+                    },
+                    "contact_name": {
+                        "type": "STRING",
+                        "description": "Name of person/organization to call (e.g., 'Dr. Smith', 'Dentist Office', 'Helen')"
+                    },
+                    "goal_type": {
+                        "type": "STRING",
+                        "description": "Type of goal: 'appointment', 'inquiry', 'followup', 'reservation', 'support', or 'general'"
+                    },
+                    "goal_description": {
+                        "type": "STRING",
+                        "description": "Detailed description of what to accomplish on the call (e.g., 'Book a dental cleaning appointment')"
+                    },
+                    "preferred_date": {
+                        "type": "STRING",
+                        "description": "Preferred date for appointment/meeting (e.g., 'Wednesday', 'January 8th', 'next Monday')"
+                    },
+                    "preferred_time": {
+                        "type": "STRING",
+                        "description": "Preferred time (e.g., '2pm', 'afternoon', 'morning')"
+                    },
+                    "alternative_options": {
+                        "type": "STRING",
+                        "description": "Alternative times/dates if preferred not available (e.g., 'Thursday or Friday afternoon', 'any time next week')"
+                    },
+                    "call_now": {
+                        "type": "STRING",
+                        "description": "Whether to make the call immediately. Default: 'true'"
+                    }
+                },
+                "required": ["action"]
             }
         }
     ]

@@ -78,6 +78,25 @@ class Database:
                 )
             """)
 
+            # Create call_goals table (for goal-based outbound calls)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS call_goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phone_number TEXT NOT NULL,
+                    contact_name TEXT,
+                    goal_type TEXT NOT NULL,
+                    goal_description TEXT NOT NULL,
+                    preferred_date TEXT,
+                    preferred_time TEXT,
+                    alternative_options TEXT,
+                    status TEXT DEFAULT 'pending',
+                    result TEXT,
+                    call_sid TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT
+                )
+            """)
+
             self.conn.commit()
             logger.info(f"TARS database initialized at {self.db_path}")
 
@@ -448,6 +467,117 @@ class Database:
         )
         messages = [dict(row) for row in cursor.fetchall()]
         return list(reversed(messages))
+
+    # ==================== CALL GOALS ====================
+
+    def add_call_goal(self, phone_number: str, contact_name: str, goal_type: str,
+                      goal_description: str, preferred_date: str = None,
+                      preferred_time: str = None, alternative_options: str = None) -> int:
+        """Add a new call goal for outbound calling.
+
+        Args:
+            phone_number: Phone number to call
+            contact_name: Name of person/organization to call
+            goal_type: Type of goal (appointment, inquiry, followup, etc.)
+            goal_description: Detailed description of what to accomplish
+            preferred_date: Preferred date (e.g., "Wednesday", "2026-01-08")
+            preferred_time: Preferred time (e.g., "2pm", "afternoon")
+            alternative_options: Alternative times/dates if preferred not available
+
+        Returns:
+            Call goal ID
+        """
+        cursor = self.conn.execute(
+            """INSERT INTO call_goals
+               (phone_number, contact_name, goal_type, goal_description,
+                preferred_date, preferred_time, alternative_options)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (phone_number, contact_name, goal_type, goal_description,
+             preferred_date, preferred_time, alternative_options)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_call_goal(self, goal_id: int) -> Optional[Dict]:
+        """Get a specific call goal by ID.
+
+        Args:
+            goal_id: Call goal ID
+
+        Returns:
+            Call goal dictionary or None
+        """
+        cursor = self.conn.execute("SELECT * FROM call_goals WHERE id = ?", (goal_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_pending_call_goals(self) -> List[Dict]:
+        """Get all pending call goals.
+
+        Returns:
+            List of pending call goal dictionaries
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM call_goals WHERE status = 'pending' ORDER BY created_at"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_call_goal(self, goal_id: int, **kwargs) -> bool:
+        """Update a call goal.
+
+        Args:
+            goal_id: Call goal ID
+            **kwargs: Fields to update (status, result, call_sid, etc.)
+
+        Returns:
+            True if updated, False otherwise
+        """
+        allowed_fields = ['status', 'result', 'call_sid', 'completed_at',
+                          'phone_number', 'goal_description', 'preferred_date',
+                          'preferred_time', 'alternative_options']
+        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+
+        if not updates:
+            return False
+
+        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+        values = list(updates.values()) + [goal_id]
+
+        self.conn.execute(f"UPDATE call_goals SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+        return True
+
+    def complete_call_goal(self, goal_id: int, result: str):
+        """Mark a call goal as completed.
+
+        Args:
+            goal_id: Call goal ID
+            result: Result description
+        """
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            """UPDATE call_goals
+               SET status = 'completed', result = ?, completed_at = ?
+               WHERE id = ?""",
+            (result, now, goal_id)
+        )
+        self.conn.commit()
+
+    def fail_call_goal(self, goal_id: int, reason: str):
+        """Mark a call goal as failed.
+
+        Args:
+            goal_id: Call goal ID
+            reason: Failure reason
+        """
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            """UPDATE call_goals
+               SET status = 'failed', result = ?, completed_at = ?
+               WHERE id = ?""",
+            (reason, now, goal_id)
+        )
+        self.conn.commit()
 
     def close(self):
         """Close database connection."""

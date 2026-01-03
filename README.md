@@ -80,7 +80,41 @@
 TARS can:
 - Answer incoming calls to your Twilio number
 - Make outbound calls for reminders (automatic)
+- **Make goal-based outbound calls to accomplish specific tasks**
 - Handle natural voice conversations with British accent
+
+### Goal-Based Outbound Calling (NEW!)
+
+TARS can make calls on your behalf with specific objectives. Perfect for booking appointments, making inquiries, or following up.
+
+**Book appointments:**
+- "Call my dentist to book an appointment for Wednesday at 2pm"
+- "Call the hair salon to schedule a haircut next Friday afternoon"
+- "Call Dr. Smith's office to schedule a checkup for next week"
+
+**Make inquiries:**
+- "Call the DMV to ask about license renewal requirements"
+- "Call the restaurant to ask if they have vegetarian options"
+- "Call the gym to ask about membership prices"
+
+**Follow-ups:**
+- "Call Helen to see if she wants to meet for dinner"
+- "Call the repair shop to check if my car is ready"
+
+**How it works:**
+1. You tell TARS who to call and what goal to accomplish
+2. TARS can look up phone numbers from your contacts automatically
+3. You specify preferred times/dates (e.g., "Wednesday at 2pm")
+4. TARS makes the call with the goal in mind
+5. **If preferred time isn't available, TARS will text you alternative options for approval**
+6. All call goals are saved to the database for tracking
+
+**List pending calls:**
+- "What calls do I have scheduled?"
+- "Show me my pending call goals"
+
+**Cancel calls:**
+- "Cancel the call to the dentist"
 
 ### Managing Reminders
 
