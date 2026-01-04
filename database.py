@@ -468,6 +468,23 @@ class Database:
         messages = [dict(row) for row in cursor.fetchall()]
         return list(reversed(messages))
 
+    def get_conversations_by_call_sid(self, call_sid: str) -> List[Dict]:
+        """Get all conversations for a specific call.
+
+        Args:
+            call_sid: Twilio Call SID
+
+        Returns:
+            List of conversation dictionaries for this call, in chronological order
+        """
+        cursor = self.conn.execute(
+            """SELECT * FROM conversations
+               WHERE call_sid = ?
+               ORDER BY timestamp ASC""",
+            (call_sid,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     # ==================== CALL GOALS ====================
 
     def add_call_goal(self, phone_number: str, contact_name: str, goal_type: str,

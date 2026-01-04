@@ -126,27 +126,49 @@ class TwilioMediaStreamsHandler:
                 goal = self.db.get_call_goal_by_sid(call_sid)
                 if goal and goal['status'] == 'in_progress':
                     # Mark as completed
-                    self.db.complete_call_goal(goal['id'], result=f"Call completed ({call_duration}s)")
-                    logger.info(f"Goal call {goal['id']} completed, will call Máté back")
+                    self.db.complete_call_goal(
+                        goal['id'], result=f"Call completed ({call_duration}s)")
+                    logger.info(
+                        f"Goal call {goal['id']} completed, will call Máté back")
 
-                    # Schedule callback to Máté with summary
+                    # Schedule callback to Máté with summary including conversation transcript
                     import threading
+
                     def call_back_mate():
                         import time
                         time.sleep(2)  # Brief delay before calling back
                         contact_name = goal['contact_name']
                         goal_desc = goal['goal_description']
-                        callback_message = f"Report to Máté: You just completed a call with {contact_name} regarding '{goal_desc}'. The call lasted {call_duration} seconds. Provide a brief summary of what happened during the call and any important information or next steps."
+
+                        # Get conversation transcript from this call
+                        conversations = self.db.get_conversations_by_call_sid(
+                            call_sid)
+                        transcript_summary = []
+
+                        if conversations:
+                            for conv in conversations[-20:]:  # Last 20 messages
+                                sender = "TARS" if conv['sender'] == 'assistant' else contact_name
+                                transcript_summary.append(
+                                    f"{sender}: {conv['message']}")
+
+                            transcript_text = "\n".join(transcript_summary)
+                            callback_message = f"Report to Máté about the call with {contact_name}:\n\nGOAL: {goal_desc}\nDURATION: {call_duration} seconds\n\nCONVERSATION:\n{transcript_text}\n\nProvide a brief summary of what happened and any important information or next steps."
+                        else:
+                            # Fallback if no transcript available
+                            callback_message = f"Report to Máté: You just completed a call with {contact_name} regarding '{goal_desc}'. The call lasted {call_duration} seconds. Unfortunately, the conversation transcript was not available. Provide a brief update based on what you remember."
+
                         try:
                             self.make_call(
                                 to_number=Config.TARGET_PHONE_NUMBER,
                                 reminder_message=callback_message
                             )
-                            logger.info(f"Called Máté back after goal call completion")
+                            logger.info(
+                                f"Called Máté back after goal call completion with transcript")
                         except Exception as e:
                             logger.error(f"Error calling Máté back: {e}")
 
-                    threading.Thread(target=call_back_mate, daemon=True).start()
+                    threading.Thread(target=call_back_mate,
+                                     daemon=True).start()
 
             # Track if call was answered for reminder delivery
             if self.reminder_checker:
@@ -322,7 +344,8 @@ class TwilioMediaStreamsHandler:
 
         try:
             print(f"\n🔌 WEBSOCKET CONNECTED")
-            logger.info("Media stream connected - creating dedicated Gemini session")
+            logger.info(
+                "Media stream connected - creating dedicated Gemini session")
 
             # Connect THIS call's Gemini Live client
             print(f"   Connecting to Gemini Live...")
