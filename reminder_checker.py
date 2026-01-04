@@ -12,25 +12,24 @@ logger = logging.getLogger(__name__)
 class ReminderChecker:
     """Checks for due reminders and triggers notifications/calls."""
     
-    def __init__(self, db: Database, call_trigger: Optional[Callable] = None, gemini_client=None, messaging_handler=None):
-        """Initialize reminder checker.
+    def __init__(self, db: Database, twilio_handler=None, session_manager=None, router=None):
+        """Initialize reminder checker with multi-session awareness.
 
         Args:
             db: Database instance
-            call_trigger: Async function to call when reminder is due
-                         Should accept (reminder_dict) and make phone call
-            gemini_client: GeminiLiveClient instance for sending in-call reminders
-            messaging_handler: MessagingHandler instance for sending reminder messages
+            twilio_handler: TwilioMediaStreamsHandler for making calls
+            session_manager: SessionManager for checking active sessions
+            router: MessageRouter for routing reminders to active sessions
         """
         self.db = db
-        self.call_trigger = call_trigger
-        self.gemini_client = gemini_client
-        self.messaging_handler = messaging_handler
+        self.twilio_handler = twilio_handler
+        self.session_manager = session_manager
+        self.router = router
+        self.messaging_handler = None  # Will be set by main
         self.running = False
-        self.in_phone_call = False
         self.check_interval = 60  # Check every 60 seconds
 
-        # Track pending reminder for current call
+        # Track pending reminder for current call (deprecated - kept for compatibility)
         self.pending_reminder_id = None
         self.call_was_answered = False
     
@@ -52,28 +51,14 @@ class ReminderChecker:
         self.running = False
         logger.info("Reminder checker stopped")
     
+    # Deprecated methods - kept for backward compatibility
     def set_in_call(self, in_call: bool):
-        """Set whether user is currently in a phone call.
-        
-        Args:
-            in_call: True if in call, False otherwise
-        """
-        old_status = self.in_phone_call
-        self.in_phone_call = in_call
-        logger.info(f"In-call status updated: {in_call}")
-        
-        # If call ended, handle the pending reminder
-        if old_status and not in_call and self.pending_reminder_id:
-            self._handle_call_ended()
-    
+        """Deprecated: Set whether user is in a phone call (for backward compatibility)."""
+        logger.debug(f"set_in_call called (deprecated): {in_call}")
+
     def set_call_answered(self, answered: bool):
-        """Set whether the current call was answered.
-        
-        Args:
-            answered: True if call connected (in-progress), False if not answered
-        """
-        self.call_was_answered = answered
-        logger.info(f"Call answered status: {answered}")
+        """Deprecated: Set whether call was answered (for backward compatibility)."""
+        logger.debug(f"set_call_answered called (deprecated): {answered}")
     
     def _handle_call_ended(self):
         """Handle when a reminder call ends."""
@@ -124,68 +109,75 @@ class ReminderChecker:
             await self._handle_due_reminder(reminder, now)
     
     async def _handle_due_reminder(self, reminder: dict, current_time: datetime):
-        """Handle a due reminder.
-        
+        """Handle a due reminder with multi-session awareness.
+
         Args:
             reminder: Reminder dictionary
             current_time: Current datetime
         """
         reminder_id = reminder['id']
         title = reminder['title']
-        
+
         logger.info(f"Processing due reminder: {title}")
-        
-        if self.in_phone_call:
-            # User is already on the phone, announce it during the call
-            logger.info(f"User in call - reminder will be announced: {title}")
-            
-            # Send reminder to Gemini to announce during the call
-            if self.gemini_client and self.gemini_client.is_connected:
+
+        # Check if Máté has active main session
+        mate_session = None
+        if self.session_manager:
+            mate_session = await self.session_manager.get_mate_main_session()
+
+        if mate_session and mate_session.status.value == "active":
+            # User is in active call - announce via router
+            logger.info(f"Máté in active call - announcing reminder: {title}")
+
+            if self.router:
                 try:
-                    reminder_msg = f"IMPORTANT: You need to announce this reminder to the user right now: {title}"
-                    await self.gemini_client.send_text(reminder_msg, end_of_turn=True)
-                    logger.info(f"Sent in-call reminder to Gemini: {title}")
+                    await self.router.route_message(
+                        from_session=None,  # System message
+                        message=f"Reminder: {title}",
+                        target="user",
+                        message_type="reminder"
+                    )
+                    logger.info(f"Sent reminder to active session: {title}")
                 except Exception as e:
-                    logger.error(f"Error sending in-call reminder: {e}")
-            
+                    logger.error(f"Error routing reminder to session: {e}")
+
             # Mark as complete since it's being announced
             if not reminder['recurrence']:
                 self.db.mark_reminder_complete(reminder_id)
                 logger.info(f"Marked non-recurring reminder {reminder_id} as complete after in-call announcement")
-        else:
-            # User not on call - trigger an outbound call
-            logger.info(f"User not in call - triggering call for reminder: {title}")
-            
-            # Track this reminder for the call
-            self.pending_reminder_id = reminder_id
-            self.call_was_answered = False
 
-            # Get delivery method from config
+        else:
+            # User not in call - use delivery method from config
+            logger.info(f"Máté not in call - using fallback delivery for reminder: {title}")
+
             delivery_method = Config.REMINDER_DELIVERY.lower()
 
             # Send via call
             if delivery_method in ['call', 'both']:
-                if self.call_trigger:
+                if self.twilio_handler:
                     try:
-                        await self.call_trigger(reminder)
+                        self.twilio_handler.make_call(
+                            to_number=Config.TARGET_PHONE_NUMBER,
+                            reminder_message=title
+                        )
+                        logger.info(f"Initiated reminder call for: {title}")
                     except Exception as e:
-                        logger.error(f"Error triggering call for reminder: {e}")
-                        # Clear pending if call failed
-                        self.pending_reminder_id = None
+                        logger.error(f"Error making reminder call: {e}")
 
             # Send via message
             if delivery_method in ['message', 'both']:
                 if self.messaging_handler:
                     try:
-                        message_text = f"Reminder: {reminder['text']}"
-                        await self.messaging_handler.send_sms(
+                        message_text = f"⏰ Reminder: {title}"
+                        await self.messaging_handler.send_message(
                             to_number=Config.TARGET_PHONE_NUMBER,
-                            message=message_text
+                            message=message_text,
+                            medium='sms'
                         )
-                        logger.info(f"Sent reminder message for: {reminder['text']}")
+                        logger.info(f"Sent reminder SMS for: {title}")
                     except Exception as e:
-                        logger.error(f"Error sending reminder message: {e}")
-        
+                        logger.error(f"Error sending reminder SMS: {e}")
+
         # Mark as triggered
         self.db.mark_reminder_triggered(reminder_id)
         
