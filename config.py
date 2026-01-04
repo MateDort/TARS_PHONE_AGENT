@@ -14,6 +14,7 @@ class Config:
     TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
     TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '+14452344131')
     TARGET_PHONE_NUMBER = os.getenv('TARGET_PHONE_NUMBER', '+14049525557')
+    TARGET_NAME = os.getenv('TARGET_NAME', 'Máté Dort')  # For unknown caller greeting
 
     # Webhook Configuration
     WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL', 'http://localhost:5002')
@@ -48,6 +49,9 @@ class Config:
     # Delivery Method Configuration
     REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')  # Options: call, message, both
     CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')  # Options: call, message, both
+
+    # Agent Hub Configuration
+    MAX_CONCURRENT_SESSIONS = int(os.getenv('MAX_CONCURRENT_SESSIONS', '10'))  # Hard limit for concurrent calls
 
     @classmethod
     def validate(cls):

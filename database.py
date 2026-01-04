@@ -92,8 +92,85 @@ class Database:
                     status TEXT DEFAULT 'pending',
                     result TEXT,
                     call_sid TEXT,
+                    parent_session_id TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     completed_at TEXT
+                )
+            """)
+
+            # Create agent_sessions table (for agent hub)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL UNIQUE,
+                    call_sid TEXT NOT NULL,
+                    session_name TEXT NOT NULL,
+                    phone_number TEXT NOT NULL,
+                    permission_level TEXT NOT NULL,
+                    session_type TEXT NOT NULL,
+                    purpose TEXT,
+                    status TEXT NOT NULL,
+                    parent_session_id TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY (parent_session_id) REFERENCES agent_sessions(session_id)
+                )
+            """)
+
+            # Create indexes for agent_sessions
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_call_sid
+                ON agent_sessions(call_sid)
+            """)
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_phone
+                ON agent_sessions(phone_number)
+            """)
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_status
+                ON agent_sessions(status)
+            """)
+
+            # Create inter_session_messages table
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS inter_session_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL UNIQUE,
+                    from_session_id TEXT NOT NULL,
+                    to_session_id TEXT,
+                    to_session_name TEXT,
+                    message_type TEXT NOT NULL,
+                    message_body TEXT NOT NULL,
+                    context TEXT,
+                    status TEXT NOT NULL,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    FOREIGN KEY (from_session_id) REFERENCES agent_sessions(session_id)
+                )
+            """)
+
+            # Create indexes for inter_session_messages
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_from
+                ON inter_session_messages(from_session_id)
+            """)
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_to
+                ON inter_session_messages(to_session_id)
+            """)
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_status
+                ON inter_session_messages(status)
+            """)
+
+            # Create broadcast_approvals table (for hybrid broadcast mode)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_approvals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_group TEXT NOT NULL,
+                    approved INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL
                 )
             """)
 
@@ -606,6 +683,223 @@ class Database:
                SET status = 'failed', result = ?, completed_at = ?
                WHERE id = ?""",
             (reason, now, goal_id)
+        )
+        self.conn.commit()
+
+    # ==================== AGENT SESSIONS ====================
+
+    def add_agent_session(self, session_dict: Dict) -> int:
+        """Add a new agent session.
+
+        Args:
+            session_dict: Session data dictionary
+
+        Returns:
+            Session row ID
+        """
+        cursor = self.conn.execute(
+            """INSERT INTO agent_sessions
+               (session_id, call_sid, session_name, phone_number, permission_level,
+                session_type, purpose, status, parent_session_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_dict['session_id'], session_dict['call_sid'],
+             session_dict['session_name'], session_dict['phone_number'],
+             session_dict['permission_level'], session_dict['session_type'],
+             session_dict.get('purpose'), session_dict['status'],
+             session_dict.get('parent_session_id'), session_dict['created_at'])
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_session_by_id(self, session_id: str) -> Optional[Dict]:
+        """Get session by session ID.
+
+        Args:
+            session_id: Session UUID
+
+        Returns:
+            Session dictionary or None
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM agent_sessions WHERE session_id = ?",
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_active_sessions(self) -> List[Dict]:
+        """Get all active sessions.
+
+        Returns:
+            List of active session dictionaries
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM agent_sessions WHERE status = 'active' ORDER BY created_at"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def complete_session(self, session_id: str, completed_at: datetime):
+        """Mark session as completed.
+
+        Args:
+            session_id: Session UUID
+            completed_at: Completion timestamp
+        """
+        self.conn.execute(
+            """UPDATE agent_sessions
+               SET status = 'completed', completed_at = ?
+               WHERE session_id = ?""",
+            (completed_at.isoformat(), session_id)
+        )
+        self.conn.commit()
+
+    def search_contact_by_phone(self, phone_number: str) -> Optional[Dict]:
+        """Search for contact by phone number.
+
+        Args:
+            phone_number: Phone number to search
+
+        Returns:
+            Contact dictionary or None
+        """
+        # Normalize phone number for comparison
+        normalized = phone_number.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+
+        cursor = self.conn.execute(
+            "SELECT * FROM contacts WHERE phone LIKE ?",
+            (f'%{normalized[-10:]}%',)  # Match last 10 digits
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    # ==================== INTER-SESSION MESSAGES ====================
+
+    def add_inter_session_message(
+        self,
+        message_id: str,
+        from_session_id: Optional[str],
+        to_session_id: Optional[str],
+        to_session_name: str,
+        message_type: str,
+        message_body: str,
+        context: str = "",
+        status: str = "pending",
+        error_message: str = None
+    ) -> int:
+        """Add an inter-session message.
+
+        Args:
+            message_id: Unique message ID
+            from_session_id: Source session ID (None for system messages)
+            to_session_id: Target session ID (None for broadcasts)
+            to_session_name: Target session name
+            message_type: Message type
+            message_body: Message content
+            context: Optional context JSON string
+            status: Message status
+            error_message: Optional error message
+
+        Returns:
+            Message row ID
+        """
+        now = datetime.now().isoformat()
+        delivered_at = now if status == 'delivered' else None
+
+        cursor = self.conn.execute(
+            """INSERT INTO inter_session_messages
+               (message_id, from_session_id, to_session_id, to_session_name,
+                message_type, message_body, context, status, error_message,
+                created_at, delivered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (message_id, from_session_id, to_session_id, to_session_name,
+             message_type, message_body, context, status, error_message,
+             now, delivered_at)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def update_message_status(self, message_id: str, status: str):
+        """Update message delivery status.
+
+        Args:
+            message_id: Message UUID
+            status: New status
+        """
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            """UPDATE inter_session_messages
+               SET status = ?, delivered_at = ?
+               WHERE message_id = ?""",
+            (status, now, message_id)
+        )
+        self.conn.commit()
+
+    def get_inter_session_message(self, message_id: str) -> Optional[Dict]:
+        """Get inter-session message by ID.
+
+        Args:
+            message_id: Message UUID
+
+        Returns:
+            Message dictionary or None
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM inter_session_messages WHERE message_id = ?",
+            (message_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    # ==================== BROADCAST APPROVALS ====================
+
+    def add_broadcast_approval(self, session_group: str, approved: int = 0) -> int:
+        """Add a broadcast approval record.
+
+        Args:
+            session_group: Group identifier
+            approved: Approval status (0=not asked, 1=approved, 2=denied)
+
+        Returns:
+            Approval row ID
+        """
+        now = datetime.now().isoformat()
+        cursor = self.conn.execute(
+            """INSERT INTO broadcast_approvals
+               (session_group, approved, created_at)
+               VALUES (?, ?, ?)""",
+            (session_group, approved, now)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_broadcast_approval(self, session_group: str) -> Optional[Dict]:
+        """Get broadcast approval for a session group.
+
+        Args:
+            session_group: Group identifier
+
+        Returns:
+            Approval dictionary or None
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM broadcast_approvals WHERE session_group = ? ORDER BY created_at DESC LIMIT 1",
+            (session_group,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_broadcast_approval(self, session_group: str, approved: int):
+        """Update broadcast approval status.
+
+        Args:
+            session_group: Group identifier
+            approved: Approval status (1=approved, 2=denied)
+        """
+        self.conn.execute(
+            """UPDATE broadcast_approvals
+               SET approved = ?
+               WHERE session_group = ?""",
+            (approved, session_group)
         )
         self.conn.commit()
 
