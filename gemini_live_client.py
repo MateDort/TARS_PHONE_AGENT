@@ -75,23 +75,42 @@ Be conversational, friendly, and helpful."""
         self.function_handlers[declaration["name"]] = handler
         logger.info(f"Registered function: {declaration['name']}")
     
-    def _build_config(self) -> types.LiveConnectConfig:
-        """Build configuration for Gemini Live session.
-        
+    def _build_config(self, permission_level: str = "full") -> types.LiveConnectConfig:
+        """Build configuration for Gemini Live session with permission filtering.
+
+        Args:
+            permission_level: "full" for all functions, "limited" for restricted access
+
         Returns:
-            LiveConnectConfig with voice, tools, and function calling
+            LiveConnectConfig with voice, tools, and filtered function calling
         """
+        # Filter function declarations based on permission level
+        filtered_declarations = self.function_declarations
+
+        if permission_level == "limited":
+            # Import security module for filtering
+            try:
+                from security import filter_functions_by_permission, PermissionLevel
+                filtered_declarations = filter_functions_by_permission(
+                    PermissionLevel.LIMITED,
+                    self.function_declarations
+                )
+                logger.info(f"Filtered functions for LIMITED access: {len(filtered_declarations)}/{len(self.function_declarations)}")
+            except ImportError:
+                # Security module not available, use all functions
+                logger.warning("Security module not available, using all functions")
+
         # Build tools list
         tools = [
             {'google_search': {}},  # Enable Google Search
         ]
-        
-        # Add custom function declarations if any
-        if self.function_declarations:
+
+        # Add filtered function declarations if any
+        if filtered_declarations:
             tools.append({
-                "function_declarations": self.function_declarations
+                "function_declarations": filtered_declarations
             })
-        
+
         # Build config with proper format for newer Gemini API
         config = types.LiveConnectConfig(
             # Enable audio response
@@ -118,13 +137,17 @@ Be conversational, friendly, and helpful."""
             # Tools (Google Search + custom functions)
             tools=tools
         )
-        
+
         return config
-    
-    async def connect(self):
-        """Connect to Gemini Live session."""
+
+    async def connect(self, permission_level: str = "full"):
+        """Connect to Gemini Live session with permission filtering.
+
+        Args:
+            permission_level: "full" for all functions, "limited" for restricted access
+        """
         try:
-            config = self._build_config()
+            config = self._build_config(permission_level)
             
             # Store the context manager and enter it
             self._session_context = self.client.aio.live.connect(
