@@ -12,6 +12,8 @@ from twilio_media_streams import TwilioMediaStreamsHandler
 from sub_agents_tars import get_all_agents, get_function_declarations
 from reminder_checker import ReminderChecker
 from translations import format_text
+from session_manager import SessionManager
+from message_router import MessageRouter
 
 # Configure logging
 logging.basicConfig(
@@ -63,32 +65,53 @@ class TARSPhoneAgent:
             system_instruction=system_instruction
         )
 
-        # Initialize Twilio handler first (needed for twilio_client)
-        self.twilio_handler = TwilioMediaStreamsHandler(
-            self.gemini_client,
-            reminder_checker=None,  # Will be set later
-            database=self.db
-        )
+        # Initialize SessionManager for agent hub
+        self.session_manager = SessionManager(self.db)
+        logger.info("SessionManager initialized")
 
-        # Initialize messaging handler for SMS/WhatsApp
+        # Initialize messaging handler for SMS/WhatsApp (needed for router)
         from messaging_handler import MessagingHandler
         self.messaging_handler = MessagingHandler(
             gemini_client=self.gemini_client,
             database=self.db,
-            twilio_client=self.twilio_handler.twilio_client
+            twilio_client=None  # Will be set after twilio_handler created
         )
 
-        # Initialize reminder checker with messaging handler
+        # Initialize MessageRouter for inter-session communication
+        self.router = MessageRouter(
+            self.session_manager,
+            self.messaging_handler,
+            self.db
+        )
+        logger.info("MessageRouter initialized")
+
+        # Set router reference in session_manager (circular dependency workaround)
+        self.session_manager.set_router(self.router)
+
+        # Initialize reminder checker with multi-session awareness
         self.reminder_checker = ReminderChecker(
             db=self.db,
-            call_trigger=self._trigger_reminder_call,
-            gemini_client=self.gemini_client,
-            messaging_handler=self.messaging_handler
+            twilio_handler=None,  # Will be set after twilio_handler created
+            session_manager=self.session_manager,
+            router=self.router
         )
+        logger.info("ReminderChecker initialized with multi-session support")
 
-        # Pass messaging handler and reminder checker to Twilio handler
-        self.twilio_handler.messaging_handler = self.messaging_handler
-        self.twilio_handler.reminder_checker = self.reminder_checker
+        # Initialize Twilio handler with SessionManager and Router
+        self.twilio_handler = TwilioMediaStreamsHandler(
+            self.gemini_client,
+            reminder_checker=self.reminder_checker,
+            db=self.db,
+            messaging_handler=self.messaging_handler,
+            session_manager=self.session_manager,
+            router=self.router
+        )
+        logger.info("TwilioMediaStreamsHandler initialized")
+
+        # Set circular dependencies
+        self.messaging_handler.twilio_client = self.twilio_handler.twilio_client
+        self.reminder_checker.twilio_handler = self.twilio_handler
+        self.reminder_checker.messaging_handler = self.messaging_handler
 
         # Register sub-agents (including config and message agents)
         self._register_sub_agents()
@@ -126,12 +149,14 @@ class TARSPhoneAgent:
         """Register all sub-agents with the Gemini client."""
         logger.info("Registering sub-agents...")
 
-        # Get all agents (pass database, messaging handler, twilio handler, and system reloader callback)
+        # Get all agents (including InterSessionAgent with session_manager and router)
         agents = get_all_agents(
-            self.db,
-            self.messaging_handler,
-            self._reload_system_instruction,
-            self.twilio_handler
+            db=self.db,
+            messaging_handler=self.messaging_handler,
+            system_reloader_callback=self._reload_system_instruction,
+            twilio_handler=self.twilio_handler,
+            session_manager=self.session_manager,
+            router=self.router
         )
 
         # Get function declarations
@@ -211,6 +236,10 @@ class TARSPhoneAgent:
     async def start_async(self):
         """Start TARS phone agent (async)."""
         try:
+            # Start message router for inter-session communication
+            await self.router.start()
+            logger.info("Message router started")
+
             # Start reminder checker in background
             self.reminder_task = asyncio.create_task(self.reminder_checker.start())
             logger.info("Reminder checker started")
@@ -227,7 +256,7 @@ class TARSPhoneAgent:
             await asyncio.sleep(2)
 
             logger.info("=" * 60)
-            logger.info("TARS - Máté's Personal Assistant Ready!")
+            logger.info("TARS - Máté's Personal Assistant Ready (Agent Hub Enabled)")
             logger.info("=" * 60)
             logger.info("Features:")
             logger.info("  ✓ Smart reminders (automatic calls)")
@@ -236,6 +265,8 @@ class TARSPhoneAgent:
             logger.info(f"  ✓ Humor: {Config.HUMOR_PERCENTAGE}% | Honesty: {Config.HONESTY_PERCENTAGE}%")
             logger.info("  ✓ Google Search for current info")
             logger.info("  ✓ Natural British voice conversations")
+            logger.info("  ✓ Multi-session agent hub (up to 10 concurrent calls)")
+            logger.info("  ✓ Inter-agent communication & coordination")
             logger.info("=" * 60)
             logger.info("Waiting for calls...")
 
@@ -253,6 +284,10 @@ class TARSPhoneAgent:
     async def shutdown_async(self):
         """Shutdown TARS and cleanup (async)."""
         logger.info("Shutting down TARS...")
+
+        # Stop message router
+        await self.router.stop()
+        logger.info("Message router stopped")
 
         # Stop reminder checker
         self.reminder_checker.stop()
