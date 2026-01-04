@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta
 from database import Database
 from typing import Optional, Callable
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,6 @@ class ReminderChecker:
             self.call_was_answered = False
 
             # Get delivery method from config
-            from config import Config
             delivery_method = Config.REMINDER_DELIVERY.lower()
 
             # Send via call
@@ -177,7 +177,6 @@ class ReminderChecker:
             if delivery_method in ['message', 'both']:
                 if self.messaging_handler:
                     try:
-                        from config import Config
                         message_text = f"Reminder: {reminder['text']}"
                         await self.messaging_handler.send_sms(
                             to_number=Config.TARGET_PHONE_NUMBER,

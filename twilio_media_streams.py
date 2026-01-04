@@ -173,15 +173,21 @@ class TwilioMediaStreamsHandler:
                             # Send via message
                             if callback_method in ['message', 'both']:
                                 if self.messaging_handler:
-                                    import asyncio
                                     # Create a simple text summary for message
                                     message_text = f"Call with {contact_name} completed ({call_duration}s).\n\nGOAL: {goal_desc}\n\nTranscript:\n{transcript_text[:500]}..."  # Truncate for SMS
-                                    asyncio.run(self.messaging_handler.send_sms(
-                                        to_number=Config.TARGET_PHONE_NUMBER,
-                                        message=message_text
-                                    ))
-                                    logger.info(
-                                        f"Sent callback message to Máté after goal call")
+
+                                    # Use asyncio to run the async send_sms in this sync thread
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    try:
+                                        loop.run_until_complete(self.messaging_handler.send_sms(
+                                            to_number=Config.TARGET_PHONE_NUMBER,
+                                            message=message_text
+                                        ))
+                                        logger.info(
+                                            f"Sent callback message to Máté after goal call")
+                                    finally:
+                                        loop.close()
                         except Exception as e:
                             logger.error(f"Error sending callback to Máté: {e}")
 
