@@ -46,6 +46,10 @@ Be conversational, friendly, and helpful."""
         self.on_audio_response: Optional[Callable] = None
         self.on_text_response: Optional[Callable] = None
         self.on_user_transcript: Optional[Callable] = None
+
+        # Sentence buffering for cleaner console output
+        self._ai_console_buffer = []
+        self._user_console_buffer = []
         
     def register_function(self, declaration: Dict, handler: Callable):
         """Register a function for the agent to call.
@@ -148,6 +152,21 @@ Be conversational, friendly, and helpful."""
                 self.is_connected = False
                 self.session = None
                 self._session_context = None
+                # Flush any remaining buffered console output
+                if self._ai_console_buffer:
+                    combined = ''.join(self._ai_console_buffer).strip()
+                    if combined:
+                        print(f"\n🤖 TARS: {combined}")
+                        logger.info(f"AI: {combined}")
+                    self._ai_console_buffer.clear()
+
+                if self._user_console_buffer:
+                    combined = ''.join(self._user_console_buffer).strip()
+                    if combined:
+                        print(f"\n👤 USER: {combined}")
+                        logger.info(f"User: {combined}")
+                    self._user_console_buffer.clear()
+
                 logger.info("Disconnected from Gemini Live")
             except Exception as e:
                 logger.error(f"Error disconnecting: {e}")
@@ -206,16 +225,36 @@ Be conversational, friendly, and helpful."""
                             # AI's spoken text
                             if response.server_content.output_transcription:
                                 text = response.server_content.output_transcription.text
-                                print(f"\n🤖 TARS: {text}")
-                                logger.info(f"AI: {text}")
+
+                                # Buffer for console output
+                                self._ai_console_buffer.append(text)
+                                combined = ''.join(self._ai_console_buffer)
+
+                                # Print complete sentences only
+                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(self._ai_console_buffer) > 15:
+                                    print(f"\n🤖 TARS: {combined}")
+                                    logger.info(f"AI: {combined}")
+                                    self._ai_console_buffer.clear()
+
+                                # Always call the callback (it has its own buffering)
                                 if self.on_text_response:
                                     await self.on_text_response(text)
 
                             # User's spoken text
                             if hasattr(response.server_content, 'input_transcription') and response.server_content.input_transcription:
                                 user_text = response.server_content.input_transcription.text
-                                print(f"\n👤 USER: {user_text}")
-                                logger.info(f"User: {user_text}")
+
+                                # Buffer for console output
+                                self._user_console_buffer.append(user_text)
+                                combined = ''.join(self._user_console_buffer)
+
+                                # Print complete sentences only
+                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(self._user_console_buffer) > 15:
+                                    print(f"\n👤 USER: {combined}")
+                                    logger.info(f"User: {combined}")
+                                    self._user_console_buffer.clear()
+
+                                # Always call the callback (it has its own buffering)
                                 if self.on_user_transcript:
                                     await self.on_user_transcript(user_text)
                         
