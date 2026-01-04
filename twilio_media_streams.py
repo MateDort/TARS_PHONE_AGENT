@@ -309,21 +309,32 @@ class TwilioMediaStreamsHandler:
         call_sid = None
         stream_sid = None
 
+        # CRITICAL: Create a NEW, INDEPENDENT Gemini Live client for THIS call
+        # This ensures each call has its own conversation context and doesn't interfere with other calls
+        from gemini_live_client import GeminiLiveClient
+        call_gemini_client = GeminiLiveClient(
+            api_key=Config.GEMINI_API_KEY,
+            system_instruction=self.gemini_client.system_instruction  # Use same instructions
+        )
+        # Copy function declarations and handlers from the shared client
+        call_gemini_client.function_declarations = self.gemini_client.function_declarations.copy()
+        call_gemini_client.function_handlers = self.gemini_client.function_handlers.copy()
+
         try:
             print(f"\n🔌 WEBSOCKET CONNECTED")
-            logger.info("Media stream connected")
+            logger.info("Media stream connected - creating dedicated Gemini session")
 
-            # Connect to Gemini Live
+            # Connect THIS call's Gemini Live client
             print(f"   Connecting to Gemini Live...")
-            await self.gemini_client.connect()
-            print(f"   ✅ Gemini Live connected")
+            await call_gemini_client.connect()
+            print(f"   ✅ Gemini Live connected (independent session)")
 
             # Send current time to Gemini for accurate time awareness (silently in system context)
             from datetime import datetime
             current_time = datetime.now().strftime("%I:%M %p")
             current_date = datetime.now().strftime("%A, %B %d, %Y")
             time_msg = f"[System: Current time is {current_time} on {current_date}. Use this for any time-related questions or reminders.]"
-            await self.gemini_client.send_text(time_msg, end_of_turn=True)
+            await call_gemini_client.send_text(time_msg, end_of_turn=True)
             print(f"   ⏰ Sent time context: {current_time} on {current_date}")
             logger.info(
                 f"Sent current time context to Gemini: {current_time} on {current_date}")
@@ -331,13 +342,15 @@ class TwilioMediaStreamsHandler:
             # If this is a reminder call, send the reminder message to Gemini
             if self.pending_reminder:
                 # Check if this is a goal-based call (contains "CALL OBJECTIVE")
-                if "CALL OBJECTIVE" in self.pending_reminder:
+                if "CALL OBJECTIVE" in self.pending_reminder or "=== OUTBOUND CALL" in self.pending_reminder:
                     # This is an outbound goal call - TARS is speaking to the contact, not Máté
-                    reminder_msg = f"[System: You are now on a call with the person mentioned in this objective. Speak to THEM directly. This is NOT a call with Máté.]\n\n{self.pending_reminder}"
+                    # Send as system context but DON'T end turn - let TARS greet first when they answer
+                    reminder_msg = f"[System: You are now on a call with the person mentioned in this objective. Speak to THEM directly. This is NOT a call with Máté. Start the conversation by greeting them naturally.]\n\n{self.pending_reminder}"
+                    await call_gemini_client.send_text(reminder_msg, end_of_turn=True)
                 else:
-                    # This is a reminder call to Máté
+                    # This is a reminder call to Máté - announce it immediately
                     reminder_msg = f"You need to announce this reminder to the user: {self.pending_reminder}"
-                await self.gemini_client.send_text(reminder_msg, end_of_turn=True)
+                    await call_gemini_client.send_text(reminder_msg, end_of_turn=True)
                 print(f"   🎯 Goal message sent to TARS")
                 print(f"   {self.pending_reminder[:100]}...")
                 logger.info(
@@ -378,7 +391,7 @@ class TwilioMediaStreamsHandler:
                 except Exception as e:
                     logger.error(f"Error sending audio to Twilio: {e}")
 
-            self.gemini_client.on_audio_response = send_audio_to_twilio
+            call_gemini_client.on_audio_response = send_audio_to_twilio
 
             # Set up conversation logging callbacks
             async def log_user_transcript(text: str):
@@ -412,8 +425,8 @@ class TwilioMediaStreamsHandler:
                     logger.error(f"Error logging AI response: {e}")
 
             # Register conversation logging callbacks
-            self.gemini_client.on_user_transcript = log_user_transcript
-            self.gemini_client.on_text_response = log_ai_response
+            call_gemini_client.on_user_transcript = log_user_transcript
+            call_gemini_client.on_text_response = log_ai_response
 
             # Process messages from Twilio
             async for message in websocket:
@@ -461,14 +474,14 @@ class TwilioMediaStreamsHandler:
                             )
 
                             # Check if we're reconnecting
-                            if self.is_reconnecting or not self.gemini_client.is_connected:
+                            if self.is_reconnecting or not call_gemini_client.is_connected:
                                 # Buffer audio during reconnection
                                 if len(self.audio_buffer) < self.max_buffer_size:
                                     self.audio_buffer.append(pcm_24k)
                                 continue
 
                             # Send to Gemini with correct format
-                            await self.gemini_client.send_audio(
+                            await call_gemini_client.send_audio(
                                 pcm_24k,
                                 mime_type="audio/pcm;rate=24000"
                             )
@@ -510,8 +523,8 @@ class TwilioMediaStreamsHandler:
         except Exception as e:
             logger.error(f"Error in media stream handler: {e}")
         finally:
-            # Cleanup
-            await self.gemini_client.disconnect()
+            # Cleanup - disconnect THIS call's Gemini client
+            await call_gemini_client.disconnect()
             if call_sid and call_sid in self.active_connections:
                 del self.active_connections[call_sid]
 
