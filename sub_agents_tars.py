@@ -917,8 +917,244 @@ class OutboundCallAgent(SubAgent):
             return "Please provide goal_id or contact_name to cancel, sir."
 
 
+class InterSessionAgent(SubAgent):
+    """Handles inter-session communication and coordination for agent hub."""
+
+    def __init__(self, session_manager=None, router=None, db=None):
+        super().__init__(
+            name="inter_session",
+            description="Inter-agent communication and coordination"
+        )
+        self.session_manager = session_manager
+        self.router = router
+        self.db = db
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute inter-session operation.
+
+        Args:
+            args: {
+                "action": "send_message|request_confirmation|broadcast|list_sessions|take_message|schedule_callback",
+                ... (action-specific parameters)
+            }
+        """
+        action = args.get("action", "send_message")
+
+        if action == "send_message":
+            return await self._send_message(args)
+        elif action == "request_confirmation":
+            return await self._request_confirmation(args)
+        elif action == "broadcast":
+            return await self._broadcast_with_approval(args)
+        elif action == "list_sessions":
+            return await self._list_sessions(args)
+        elif action == "take_message":
+            return await self._take_message(args)
+        elif action == "schedule_callback":
+            return await self._schedule_callback(args)
+        else:
+            return f"Unknown action: {action}"
+
+    async def _send_message(self, args: Dict[str, Any]) -> str:
+        """Send message to specific session"""
+        if not self.router or not self.session_manager:
+            return "Inter-session communication not available, sir."
+
+        target = args.get("target_session_name")
+        message = args.get("message")
+        message_type = args.get("message_type", "direct")
+        context = args.get("context", "")
+
+        if not target or not message:
+            return "Please provide target_session_name and message, sir."
+
+        # Get current session (this needs to be injected by the handler)
+        # For now, we'll use None and let router handle it
+        await self.router.route_message(
+            from_session=None,  # Will be set by handler
+            message=message,
+            target=target,
+            message_type=message_type,
+            context={"detail": context}
+        )
+
+        return f"Message sent to {target}, sir."
+
+    async def _request_confirmation(self, args: Dict[str, Any]) -> str:
+        """Request user confirmation/decision"""
+        if not self.router:
+            return "Inter-session communication not available, sir."
+
+        question = args.get("question")
+        context = args.get("context", "")
+        options = args.get("options", "yes/no")
+
+        if not question:
+            return "Please provide a question, sir."
+
+        # Format confirmation request
+        formatted_message = f"{question} Options: {options}. Context: {context}"
+
+        await self.router.route_message(
+            from_session=None,
+            message=formatted_message,
+            target="user",
+            message_type="confirmation_request",
+            context={"question": question, "options": options, "detail": context}
+        )
+
+        return "Confirmation request sent to Máté, sir. Awaiting response."
+
+    async def _broadcast_with_approval(self, args: Dict[str, Any]) -> str:
+        """Broadcast with hybrid approval mode"""
+        if not self.router or not self.db:
+            return "Broadcast not available, sir."
+
+        target_sessions = args.get("target_sessions", "")
+        message = args.get("message")
+        session_group = args.get("session_group", "default")
+
+        if not message:
+            return "Please provide a message to broadcast, sir."
+
+        # Check if this group already approved
+        approval = self.db.get_broadcast_approval(session_group)
+
+        if not approval or approval['approved'] == 0:
+            # First time - ask user for permission
+            question = f"I'd like to share this information with all {session_group} sessions: '{message}'. Should I broadcast this?"
+
+            await self.router.route_message(
+                from_session=None,
+                message=question,
+                target="user",
+                message_type="broadcast_approval_request",
+                context={"session_group": session_group, "message": message}
+            )
+
+            # Store pending approval
+            if not approval:
+                self.db.add_broadcast_approval(session_group, approved=0)
+
+            return f"Requesting permission from Máté to broadcast to {session_group} sessions, sir..."
+
+        elif approval['approved'] == 1:
+            # Already approved - go ahead
+            session_list = [s.strip() for s in target_sessions.split(",")]
+
+            await self.router.route_message(
+                from_session=None,
+                message=message,
+                target=session_list,
+                message_type="broadcast",
+                context={"session_group": session_group}
+            )
+
+            return f"Message broadcasted to {len(session_list)} sessions, sir."
+
+        else:
+            return "Broadcast permission was denied by Máté, sir."
+
+    async def _list_sessions(self, args: Dict[str, Any]) -> str:
+        """List active sessions"""
+        if not self.session_manager:
+            return "Session management not available, sir."
+
+        filter_type = args.get("filter", "all").lower()
+
+        active_sessions = await self.session_manager.get_active_sessions()
+
+        if not active_sessions:
+            return "No active sessions at the moment, sir."
+
+        # Filter sessions
+        if filter_type == "outbound":
+            sessions = [s for s in active_sessions if s.session_type.value == "outbound_goal"]
+        elif filter_type == "inbound":
+            sessions = [s for s in active_sessions if "inbound" in s.session_type.value]
+        elif filter_type == "mate_only":
+            sessions = [s for s in active_sessions if s.has_full_access()]
+        else:  # all
+            sessions = active_sessions
+
+        if not sessions:
+            return f"No {filter_type} sessions active, sir."
+
+        # Format list
+        session_list = []
+        for s in sessions:
+            session_list.append(f"- {s.session_name} ({s.permission_level.value} access, {s.session_type.value})")
+
+        return f"Active sessions ({len(sessions)}):\n" + "\n".join(session_list)
+
+    async def _take_message(self, args: Dict[str, Any]) -> str:
+        """Take message for Máté (limited access function)"""
+        if not self.router:
+            return "Messaging not available at the moment."
+
+        caller_name = args.get("caller_name", "Unknown caller")
+        message = args.get("message")
+        callback_requested = args.get("callback_requested", False)
+
+        if not message:
+            return "Please provide a message."
+
+        # Format message for Máté
+        formatted_msg = f"Message from {caller_name}: {message}"
+        if callback_requested:
+            formatted_msg += f"\n(Caller requested a callback)"
+
+        await self.router.route_message(
+            from_session=None,
+            message=formatted_msg,
+            target="user",
+            message_type="notification"
+        )
+
+        return f"I've relayed your message to {Config.TARGET_NAME}. He'll get back to you soon."
+
+    async def _schedule_callback(self, args: Dict[str, Any]) -> str:
+        """Schedule callback for limited access caller"""
+        caller_name = args.get("caller_name", "Unknown caller")
+        callback_time = args.get("callback_time")
+        reason = args.get("reason")
+
+        if not callback_time or not reason:
+            return "Please provide callback time and reason."
+
+        # Create a reminder for Máté to call back
+        if self.db:
+            try:
+                # Parse callback time and create reminder
+                from dateutil import parser
+                from datetime import datetime
+
+                try:
+                    callback_dt = parser.parse(callback_time, fuzzy=True)
+                    # If parsed date is in the past, assume it's for tomorrow
+                    if callback_dt < datetime.now():
+                        callback_dt = callback_dt.replace(day=datetime.now().day + 1)
+                except:
+                    # If parsing fails, schedule for 1 hour from now
+                    callback_dt = datetime.now() + timedelta(hours=1)
+
+                reminder_title = f"Call back {caller_name}: {reason}"
+
+                self.db.add_reminder(
+                    title=reminder_title,
+                    datetime_str=callback_dt.isoformat()
+                )
+
+                return f"I've scheduled a callback reminder for {Config.TARGET_NAME} at {callback_dt.strftime('%I:%M %p on %B %d')}. He'll call you back then."
+            except Exception as e:
+                logger.error(f"Error scheduling callback: {e}")
+                return f"I've noted your callback request for {callback_time}. {Config.TARGET_NAME} will get back to you."
+        else:
+            return f"I've noted your callback request. {Config.TARGET_NAME} will get back to you."
+
+
 # Agent registry
-def get_all_agents(db: Database, messaging_handler=None, system_reloader_callback=None, twilio_handler=None) -> Dict[str, SubAgent]:
+def get_all_agents(db: Database, messaging_handler=None, system_reloader_callback=None, twilio_handler=None, session_manager=None, router=None) -> Dict[str, SubAgent]:
     """Get all available sub-agents for TARS.
 
     Args:
@@ -943,6 +1179,10 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     # Add outbound call agent if twilio_handler is provided
     if twilio_handler:
         agents["outbound_call"] = OutboundCallAgent(db, twilio_handler)
+
+    # Add inter-session agent if session_manager and router are provided
+    if session_manager and router:
+        agents["inter_session"] = InterSessionAgent(session_manager, router, db)
 
     return agents
 
@@ -1153,6 +1393,159 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action"]
+            }
+        },
+        # Inter-session communication functions
+        {
+            "name": "send_message_to_session",
+            "description": "Send a message to another active agent session (inter-agent communication). Use when you need to communicate with another ongoing call. Examples: 'Tell the Barber Shop call that 7pm works', 'Ask the Máté (main) session if $80/night is acceptable'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'send_message'"
+                    },
+                    "target_session_name": {
+                        "type": "STRING",
+                        "description": "Name of the target session (e.g., 'Máté (main)', 'Call with Barber Shop', 'Call with Drury Hotel')"
+                    },
+                    "message": {
+                        "type": "STRING",
+                        "description": "Message to send to the target session"
+                    },
+                    "message_type": {
+                        "type": "STRING",
+                        "description": "Type: 'direct' (simple message), 'confirmation_request' (awaiting yes/no), or 'update' (FYI)"
+                    },
+                    "context": {
+                        "type": "STRING",
+                        "description": "Additional context about why you're sending this message"
+                    }
+                },
+                "required": ["action", "target_session_name", "message"]
+            }
+        },
+        {
+            "name": "request_user_confirmation",
+            "description": "Request a yes/no decision from Máté. Use when you need user approval for an action. This will route to Máté's active call if in one, or send SMS/call if not. Examples: 'Does 7pm work instead of 6pm?', 'Suite Inn quoted $60/night, should I accept?'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'request_confirmation'"
+                    },
+                    "question": {
+                        "type": "STRING",
+                        "description": "The yes/no question to ask Máté"
+                    },
+                    "context": {
+                        "type": "STRING",
+                        "description": "Context about what you're doing (e.g., 'negotiating with barber', 'comparing hotel prices')"
+                    },
+                    "options": {
+                        "type": "STRING",
+                        "description": "Available options (e.g., 'yes/no', '7pm or 8pm', 'Drury at $100 or Suite Inn at $60')"
+                    }
+                },
+                "required": ["action", "question", "context"]
+            }
+        },
+        {
+            "name": "broadcast_to_sessions",
+            "description": "Send a message to multiple sessions at once (broadcast). Use for coordinating parallel negotiations. For hybrid mode: asks user permission first time per batch. Examples: 'Tell all hotel calls that we got $60/night quote', 'Update all pending sessions that appointment is booked'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'broadcast'"
+                    },
+                    "target_sessions": {
+                        "type": "STRING",
+                        "description": "Comma-separated list of session names, or 'all' for all active sessions"
+                    },
+                    "message": {
+                        "type": "STRING",
+                        "description": "Message to broadcast"
+                    },
+                    "session_group": {
+                        "type": "STRING",
+                        "description": "Group identifier (e.g., 'hotel_negotiations') for tracking approval"
+                    }
+                },
+                "required": ["action", "target_sessions", "message"]
+            }
+        },
+        {
+            "name": "list_active_sessions",
+            "description": "List all currently active agent sessions. Use to see what other calls are ongoing. Useful for coordination.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'list_sessions'"
+                    },
+                    "filter": {
+                        "type": "STRING",
+                        "description": "Optional filter: 'all', 'outbound', 'inbound', 'mate_only'"
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "take_message_for_mate",
+            "description": "Take a message from unknown caller and relay to Máté. For limited-access sessions only. Use when a caller wants to leave a message.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'take_message'"
+                    },
+                    "caller_name": {
+                        "type": "STRING",
+                        "description": "Caller's name"
+                    },
+                    "message": {
+                        "type": "STRING",
+                        "description": "Message to relay to Máté"
+                    },
+                    "callback_requested": {
+                        "type": "STRING",
+                        "description": "Does caller want callback? 'true' or 'false'"
+                    }
+                },
+                "required": ["action", "message"]
+            }
+        },
+        {
+            "name": "schedule_callback",
+            "description": "Schedule a callback for unknown caller. For limited-access sessions only. Creates a reminder for Máté to call them back.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'schedule_callback'"
+                    },
+                    "caller_name": {
+                        "type": "STRING",
+                        "description": "Caller's name"
+                    },
+                    "callback_time": {
+                        "type": "STRING",
+                        "description": "When to callback (e.g., 'tomorrow 2pm', 'next Monday morning')"
+                    },
+                    "reason": {
+                        "type": "STRING",
+                        "description": "Reason for callback"
+                    }
+                },
+                "required": ["action", "callback_time", "reason"]
             }
         }
     ]
