@@ -53,7 +53,9 @@ class TARSPhoneAgent:
             current_time=current_time,
             current_date=current_date,
             humor_percentage=Config.HUMOR_PERCENTAGE,
-            honesty_percentage=Config.HONESTY_PERCENTAGE
+            honesty_percentage=Config.HONESTY_PERCENTAGE,
+            personality=Config.PERSONALITY,
+            nationality=Config.NATIONALITY
         )
 
         self.gemini_client = GeminiLiveClient(
@@ -61,17 +63,10 @@ class TARSPhoneAgent:
             system_instruction=system_instruction
         )
 
-        # Initialize reminder checker (will be passed to Twilio handler)
-        self.reminder_checker = ReminderChecker(
-            db=self.db,
-            call_trigger=self._trigger_reminder_call,
-            gemini_client=self.gemini_client
-        )
-
-        # Initialize Twilio handler with reminder checker and database for call status tracking
+        # Initialize Twilio handler first (needed for twilio_client)
         self.twilio_handler = TwilioMediaStreamsHandler(
             self.gemini_client,
-            reminder_checker=self.reminder_checker,
+            reminder_checker=None,  # Will be set later
             database=self.db
         )
 
@@ -83,8 +78,17 @@ class TARSPhoneAgent:
             twilio_client=self.twilio_handler.twilio_client
         )
 
-        # Pass messaging handler to Twilio handler for webhook access
+        # Initialize reminder checker with messaging handler
+        self.reminder_checker = ReminderChecker(
+            db=self.db,
+            call_trigger=self._trigger_reminder_call,
+            gemini_client=self.gemini_client,
+            messaging_handler=self.messaging_handler
+        )
+
+        # Pass messaging handler and reminder checker to Twilio handler
         self.twilio_handler.messaging_handler = self.messaging_handler
+        self.twilio_handler.reminder_checker = self.reminder_checker
 
         # Register sub-agents (including config and message agents)
         self._register_sub_agents()
@@ -108,7 +112,9 @@ class TARSPhoneAgent:
             current_time=current_time,
             current_date=current_date,
             humor_percentage=Config.HUMOR_PERCENTAGE,
-            honesty_percentage=Config.HONESTY_PERCENTAGE
+            honesty_percentage=Config.HONESTY_PERCENTAGE,
+            personality=Config.PERSONALITY,
+            nationality=Config.NATIONALITY
         )
 
         # Update the Gemini client's system instruction

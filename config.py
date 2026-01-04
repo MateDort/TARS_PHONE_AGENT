@@ -42,6 +42,12 @@ class Config:
     # TARS Personality Configuration (Dynamically Editable)
     HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))  # Default 70%
     HONESTY_PERCENTAGE = int(os.getenv('HONESTY_PERCENTAGE', '95'))  # Default 95%
+    PERSONALITY = os.getenv('PERSONALITY', 'normal')  # Options: chatty, normal, brief
+    NATIONALITY = os.getenv('NATIONALITY', 'British')  # Default: British
+
+    # Delivery Method Configuration
+    REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')  # Options: call, message, both
+    CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')  # Options: call, message, both
 
     @classmethod
     def validate(cls):
@@ -65,6 +71,18 @@ class Config:
         if not 0 <= cls.HONESTY_PERCENTAGE <= 100:
             errors.append("HONESTY_PERCENTAGE must be between 0 and 100")
 
+        # Validate personality setting
+        valid_personalities = ['chatty', 'normal', 'brief']
+        if cls.PERSONALITY.lower() not in valid_personalities:
+            errors.append(f"PERSONALITY must be one of: {', '.join(valid_personalities)}")
+
+        # Validate delivery method settings
+        valid_delivery_methods = ['call', 'message', 'both']
+        if cls.REMINDER_DELIVERY.lower() not in valid_delivery_methods:
+            errors.append(f"REMINDER_DELIVERY must be one of: {', '.join(valid_delivery_methods)}")
+        if cls.CALLBACK_REPORT.lower() not in valid_delivery_methods:
+            errors.append(f"CALLBACK_REPORT must be one of: {', '.join(valid_delivery_methods)}")
+
         if errors:
             raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
 
@@ -78,6 +96,10 @@ class Config:
         # Reload all configuration values
         cls.HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))
         cls.HONESTY_PERCENTAGE = int(os.getenv('HONESTY_PERCENTAGE', '95'))
+        cls.PERSONALITY = os.getenv('PERSONALITY', 'normal')
+        cls.NATIONALITY = os.getenv('NATIONALITY', 'British')
+        cls.REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')
+        cls.CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')
         cls.GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')
         cls.AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower() == 'true'
         cls.ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'

@@ -19,7 +19,7 @@ class ConfigAgent(SubAgent):
     def __init__(self, db: Database, system_reloader_callback=None):
         super().__init__(
             name="config_agent",
-            description="Adjusts TARS personality settings (humor and honesty percentages)"
+            description="Adjusts TARS settings (humor, honesty, personality, nationality, reminder delivery, callback reports)"
         )
         self.db = db
         self.system_reloader_callback = system_reloader_callback
@@ -37,8 +37,8 @@ class ConfigAgent(SubAgent):
         action = args.get("action", "get")
         setting = args.get("setting", "").lower()
 
-        if setting not in ["humor", "honesty"]:
-            return "Please specify either 'humor' or 'honesty' setting."
+        if setting not in ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report"]:
+            return "Please specify: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', or 'callback_report'."
 
         if action == "set":
             return await self._set_config(setting, args.get("value"))
@@ -49,44 +49,126 @@ class ConfigAgent(SubAgent):
 
     async def _set_config(self, setting: str, value: Any) -> str:
         """Set a configuration value."""
-        try:
-            value_int = int(value)
-            if not 0 <= value_int <= 100:
+        # Handle percentage-based settings (humor, honesty)
+        if setting in ["humor", "honesty"]:
+            try:
+                value_int = int(value)
+                if not 0 <= value_int <= 100:
+                    return get_text('config_invalid_value')
+            except (ValueError, TypeError):
                 return get_text('config_invalid_value')
-        except (ValueError, TypeError):
-            return get_text('config_invalid_value')
 
-        # Update environment variable and save to .env file
-        setting_key = f"{setting.upper()}_PERCENTAGE"
-        os.environ[setting_key] = str(value_int)
+            # Update environment variable and save to .env file
+            setting_key = f"{setting.upper()}_PERCENTAGE"
+            os.environ[setting_key] = str(value_int)
 
-        # Update .env file
-        self._update_env_file(setting_key, str(value_int))
+            # Update .env file
+            self._update_env_file(setting_key, str(value_int))
 
-        # Reload config
-        Config.reload()
+            # Reload config
+            Config.reload()
 
-        # Save to database for persistence
-        self.db.set_config(setting_key, str(value_int))
+            # Save to database for persistence
+            self.db.set_config(setting_key, str(value_int))
 
-        # Trigger system instruction reload if callback provided
-        if self.system_reloader_callback:
-            await self.system_reloader_callback()
+            # Trigger system instruction reload if callback provided
+            if self.system_reloader_callback:
+                await self.system_reloader_callback()
 
-        logger.info(f"Updated {setting} to {value_int}%")
+            logger.info(f"Updated {setting} to {value_int}%")
 
-        return format_text('config_updated', setting=setting, value=value_int)
+            return format_text('config_updated', setting=setting, value=value_int)
+
+        # Handle personality setting
+        elif setting == "personality":
+            valid_personalities = ['chatty', 'normal', 'brief']
+            value_str = str(value).lower()
+            if value_str not in valid_personalities:
+                return f"Invalid personality. Please choose: {', '.join(valid_personalities)}"
+
+            setting_key = "PERSONALITY"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            if self.system_reloader_callback:
+                await self.system_reloader_callback()
+
+            logger.info(f"Updated personality to {value_str}")
+            return f"Personality updated to '{value_str}', sir."
+
+        # Handle nationality setting
+        elif setting == "nationality":
+            value_str = str(value).capitalize()
+            setting_key = "NATIONALITY"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            if self.system_reloader_callback:
+                await self.system_reloader_callback()
+
+            logger.info(f"Updated nationality to {value_str}")
+            return f"Nationality updated to {value_str}, sir."
+
+        # Handle reminder_delivery setting
+        elif setting == "reminder_delivery":
+            valid_methods = ['call', 'message', 'both']
+            value_str = str(value).lower()
+            if value_str not in valid_methods:
+                return f"Invalid reminder delivery method. Please choose: {', '.join(valid_methods)}"
+
+            setting_key = "REMINDER_DELIVERY"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            logger.info(f"Updated reminder delivery to {value_str}")
+            return f"Reminder delivery method updated to '{value_str}', sir."
+
+        # Handle callback_report setting
+        elif setting == "callback_report":
+            valid_methods = ['call', 'message', 'both']
+            value_str = str(value).lower()
+            if value_str not in valid_methods:
+                return f"Invalid callback report method. Please choose: {', '.join(valid_methods)}"
+
+            setting_key = "CALLBACK_REPORT"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            logger.info(f"Updated callback report to {value_str}")
+            return f"Callback report method updated to '{value_str}', sir."
+
+        return f"Unknown setting: {setting}"
 
     async def _get_config(self, setting: str) -> str:
         """Get current configuration value."""
         if setting == "humor":
             value = Config.HUMOR_PERCENTAGE
+            return format_text('config_current_value', setting=setting, value=value)
         elif setting == "honesty":
             value = Config.HONESTY_PERCENTAGE
+            return format_text('config_current_value', setting=setting, value=value)
+        elif setting == "personality":
+            value = Config.PERSONALITY
+            return f"Current personality is '{value}', sir."
+        elif setting == "nationality":
+            value = Config.NATIONALITY
+            return f"Current nationality is {value}, sir."
+        elif setting == "reminder_delivery":
+            value = Config.REMINDER_DELIVERY
+            return f"Current reminder delivery method is '{value}', sir."
+        elif setting == "callback_report":
+            value = Config.CALLBACK_REPORT
+            return f"Current callback report method is '{value}', sir."
         else:
             return f"Unknown setting: {setting}"
-
-        return format_text('config_current_value', setting=setting, value=value)
 
     def _update_env_file(self, key: str, value: str):
         """Update .env file with new value."""
@@ -874,7 +956,7 @@ def get_function_declarations() -> list:
     return [
         {
             "name": "adjust_config",
-            "description": "Adjust TARS personality settings. Use this when Máté asks to change humor or honesty levels, or asks what they're currently set to. Examples: 'set humor to 65%', 'what's my humor percentage', 'make yourself more honest', 'set honesty to 90'",
+            "description": "Adjust TARS settings. Use when Máté asks to change humor/honesty levels, personality style, nationality, or delivery methods. Examples: 'set humor to 65%', 'make yourself more chatty', 'set personality to brief', 'become American', 'send reminders via message', 'set callback report to both'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -884,11 +966,11 @@ def get_function_declarations() -> list:
                     },
                     "setting": {
                         "type": "STRING",
-                        "description": "Setting to adjust: 'humor' or 'honesty'"
+                        "description": "Setting to adjust: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', or 'callback_report'"
                     },
                     "value": {
                         "type": "STRING",
-                        "description": "New value (0-100) for set action"
+                        "description": "New value. For humor/honesty: 0-100. For personality: 'chatty', 'normal', or 'brief'. For nationality: any nationality. For reminder_delivery/callback_report: 'call', 'message', or 'both'."
                     }
                 },
                 "required": ["action", "setting"]

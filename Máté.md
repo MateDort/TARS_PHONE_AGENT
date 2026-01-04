@@ -25,9 +25,3 @@ Long–Term Goals
 * Achieve financial freedom by 30, not for luxury but for flexibility and impact.
 * Explore life deeply — from living as a monk temporarily to helping build homes in Africa.
 
-Who You Are Becoming
-* A multi-skill creator: programming languages, engineering tools, design thinking.
-* “Cracked” in the best way — someone who learns fast, acts bold, and surprises others with capability.
-* A healthy, focused, disciplined person who trains, eats clean, and lives with clarity.
-* A polymath personality who picks up languages, instruments, and complex skills quickly.
-* A thoughtful person who chooses long-term rewards over short-term temptations.

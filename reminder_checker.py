@@ -11,22 +11,24 @@ logger = logging.getLogger(__name__)
 class ReminderChecker:
     """Checks for due reminders and triggers notifications/calls."""
     
-    def __init__(self, db: Database, call_trigger: Optional[Callable] = None, gemini_client=None):
+    def __init__(self, db: Database, call_trigger: Optional[Callable] = None, gemini_client=None, messaging_handler=None):
         """Initialize reminder checker.
-        
+
         Args:
             db: Database instance
             call_trigger: Async function to call when reminder is due
                          Should accept (reminder_dict) and make phone call
             gemini_client: GeminiLiveClient instance for sending in-call reminders
+            messaging_handler: MessagingHandler instance for sending reminder messages
         """
         self.db = db
         self.call_trigger = call_trigger
         self.gemini_client = gemini_client
+        self.messaging_handler = messaging_handler
         self.running = False
         self.in_phone_call = False
         self.check_interval = 60  # Check every 60 seconds
-        
+
         # Track pending reminder for current call
         self.pending_reminder_id = None
         self.call_was_answered = False
@@ -156,14 +158,34 @@ class ReminderChecker:
             # Track this reminder for the call
             self.pending_reminder_id = reminder_id
             self.call_was_answered = False
-            
-            if self.call_trigger:
-                try:
-                    await self.call_trigger(reminder)
-                except Exception as e:
-                    logger.error(f"Error triggering call for reminder: {e}")
-                    # Clear pending if call failed
-                    self.pending_reminder_id = None
+
+            # Get delivery method from config
+            from config import Config
+            delivery_method = Config.REMINDER_DELIVERY.lower()
+
+            # Send via call
+            if delivery_method in ['call', 'both']:
+                if self.call_trigger:
+                    try:
+                        await self.call_trigger(reminder)
+                    except Exception as e:
+                        logger.error(f"Error triggering call for reminder: {e}")
+                        # Clear pending if call failed
+                        self.pending_reminder_id = None
+
+            # Send via message
+            if delivery_method in ['message', 'both']:
+                if self.messaging_handler:
+                    try:
+                        from config import Config
+                        message_text = f"Reminder: {reminder['text']}"
+                        await self.messaging_handler.send_sms(
+                            to_number=Config.TARGET_PHONE_NUMBER,
+                            message=message_text
+                        )
+                        logger.info(f"Sent reminder message for: {reminder['text']}")
+                    except Exception as e:
+                        logger.error(f"Error sending reminder message: {e}")
         
         # Mark as triggered
         self.db.mark_reminder_triggered(reminder_id)

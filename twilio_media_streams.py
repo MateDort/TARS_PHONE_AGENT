@@ -157,15 +157,33 @@ class TwilioMediaStreamsHandler:
                             # Fallback if no transcript available
                             callback_message = f"Report to Máté: You just completed a call with {contact_name} regarding '{goal_desc}'. The call lasted {call_duration} seconds. Unfortunately, the conversation transcript was not available. Provide a brief update based on what you remember."
 
+                        # Get callback delivery method from config
+                        callback_method = Config.CALLBACK_REPORT.lower()
+
                         try:
-                            self.make_call(
-                                to_number=Config.TARGET_PHONE_NUMBER,
-                                reminder_message=callback_message
-                            )
-                            logger.info(
-                                f"Called Máté back after goal call completion with transcript")
+                            # Send via call
+                            if callback_method in ['call', 'both']:
+                                self.make_call(
+                                    to_number=Config.TARGET_PHONE_NUMBER,
+                                    reminder_message=callback_message
+                                )
+                                logger.info(
+                                    f"Called Máté back after goal call completion with transcript")
+
+                            # Send via message
+                            if callback_method in ['message', 'both']:
+                                if self.messaging_handler:
+                                    import asyncio
+                                    # Create a simple text summary for message
+                                    message_text = f"Call with {contact_name} completed ({call_duration}s).\n\nGOAL: {goal_desc}\n\nTranscript:\n{transcript_text[:500]}..."  # Truncate for SMS
+                                    asyncio.run(self.messaging_handler.send_sms(
+                                        to_number=Config.TARGET_PHONE_NUMBER,
+                                        message=message_text
+                                    ))
+                                    logger.info(
+                                        f"Sent callback message to Máté after goal call")
                         except Exception as e:
-                            logger.error(f"Error calling Máté back: {e}")
+                            logger.error(f"Error sending callback to Máté: {e}")
 
                     threading.Thread(target=call_back_mate,
                                      daemon=True).start()
@@ -352,16 +370,6 @@ class TwilioMediaStreamsHandler:
             await call_gemini_client.connect()
             print(f"   ✅ Gemini Live connected (independent session)")
 
-            # Send current time to Gemini for accurate time awareness (silently in system context)
-            from datetime import datetime
-            current_time = datetime.now().strftime("%I:%M %p")
-            current_date = datetime.now().strftime("%A, %B %d, %Y")
-            time_msg = f"[System: Current time is {current_time} on {current_date}. Use this for any time-related questions or reminders.]"
-            await call_gemini_client.send_text(time_msg, end_of_turn=True)
-            print(f"   ⏰ Sent time context: {current_time} on {current_date}")
-            logger.info(
-                f"Sent current time context to Gemini: {current_time} on {current_date}")
-
             # If this is a reminder call, send the reminder message to Gemini
             if self.pending_reminder:
                 # Check if this is a goal-based call (contains "CALL OBJECTIVE")
@@ -379,6 +387,13 @@ class TwilioMediaStreamsHandler:
                 logger.info(
                     f"Sent reminder to Gemini: {self.pending_reminder}")
                 self.pending_reminder = None  # Clear after sending
+            else:
+                # Regular incoming call - greet Máté
+                from translations import get_text
+                greeting = get_text('greeting')
+                await call_gemini_client.send_text(f"[System: Greet Máté with: '{greeting}']", end_of_turn=True)
+                print(f"   👋 Greeting message sent to TARS")
+                logger.info("Sent greeting trigger to Gemini for regular call")
 
             # Set up audio callback to send Gemini's audio back to Twilio
             async def send_audio_to_twilio(audio_data: bytes):
