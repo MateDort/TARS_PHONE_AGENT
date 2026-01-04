@@ -146,13 +146,14 @@ class TwilioMediaStreamsHandler:
                         transcript_summary = []
 
                         if conversations:
-                            for conv in conversations[-20:]:  # Last 20 messages
+                            # Include ALL messages from the entire conversation
+                            for conv in conversations:
                                 sender = "TARS" if conv['sender'] == 'assistant' else contact_name
                                 transcript_summary.append(
                                     f"{sender}: {conv['message']}")
 
                             transcript_text = "\n".join(transcript_summary)
-                            callback_message = f"Report to Máté about the call with {contact_name}:\n\nGOAL: {goal_desc}\nDURATION: {call_duration} seconds\n\nCONVERSATION:\n{transcript_text}\n\nProvide a brief summary of what happened and any important information or next steps."
+                            callback_message = f"Report to Máté about the call with {contact_name}:\n\nGOAL: {goal_desc}\nDURATION: {call_duration} seconds\n\nFULL CONVERSATION:\n{transcript_text}\n\nProvide a brief summary of what happened and any important information or next steps."
                         else:
                             # Fallback if no transcript available
                             callback_message = f"Report to Máté: You just completed a call with {contact_name} regarding '{goal_desc}'. The call lasted {call_duration} seconds. Unfortunately, the conversation transcript was not available. Provide a brief update based on what you remember."
@@ -437,40 +438,8 @@ class TwilioMediaStreamsHandler:
 
             call_gemini_client.on_audio_response = send_audio_to_twilio
 
-            # Set up conversation logging callbacks
-            async def log_user_transcript(text: str):
-                """Log user's spoken text to database."""
-                try:
-                    if hasattr(self, 'db') and self.db and text.strip():
-                        self.db.add_conversation_message(
-                            sender='user',
-                            message=text,
-                            medium='phone_call',
-                            call_sid=call_sid,
-                            direction='inbound'
-                        )
-                        logger.debug(f"Logged user transcript: {text[:50]}...")
-                except Exception as e:
-                    logger.error(f"Error logging user transcript: {e}")
-
-            async def log_ai_response(text: str):
-                """Log AI's spoken response to database."""
-                try:
-                    if hasattr(self, 'db') and self.db and text.strip():
-                        self.db.add_conversation_message(
-                            sender='assistant',
-                            message=text,
-                            medium='phone_call',
-                            call_sid=call_sid,
-                            direction='outbound'
-                        )
-                        logger.debug(f"Logged AI response: {text[:50]}...")
-                except Exception as e:
-                    logger.error(f"Error logging AI response: {e}")
-
-            # Register conversation logging callbacks
-            call_gemini_client.on_user_transcript = log_user_transcript
-            call_gemini_client.on_text_response = log_ai_response
+            # We'll set up conversation logging callbacks after we get the call_sid
+            # from Twilio to avoid closure issues with undefined call_sid
 
             # Process messages from Twilio
             async for message in websocket:
@@ -482,6 +451,64 @@ class TwilioMediaStreamsHandler:
                         # Stream started
                         call_sid = data['start']['callSid']
                         stream_sid = data['start']['streamSid']
+
+                        # NOW set up conversation logging callbacks with the correct call_sid
+                        # Buffer for accumulating sentence fragments
+                        user_buffer = []
+                        ai_buffer = []
+
+                        async def log_user_transcript(text: str):
+                            """Log user's spoken text to database, batching into sentences."""
+                            try:
+                                if not text.strip():
+                                    return
+
+                                user_buffer.append(text)
+
+                                # Check if this completes a sentence (ends with punctuation or is long enough)
+                                combined = ''.join(user_buffer)
+                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(user_buffer) > 15:
+                                    if hasattr(self, 'db') and self.db:
+                                        self.db.add_conversation_message(
+                                            sender='user',
+                                            message=combined.strip(),
+                                            medium='phone_call',
+                                            call_sid=call_sid,
+                                            direction='inbound'
+                                        )
+                                        logger.debug(f"Logged user sentence for call {call_sid}: {combined[:50]}...")
+                                        user_buffer.clear()
+                            except Exception as e:
+                                logger.error(f"Error logging user transcript: {e}")
+
+                        async def log_ai_response(text: str):
+                            """Log AI's spoken response to database, batching into sentences."""
+                            try:
+                                if not text.strip():
+                                    return
+
+                                ai_buffer.append(text)
+
+                                # Check if this completes a sentence (ends with punctuation or is long enough)
+                                combined = ''.join(ai_buffer)
+                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(ai_buffer) > 15:
+                                    if hasattr(self, 'db') and self.db:
+                                        self.db.add_conversation_message(
+                                            sender='assistant',
+                                            message=combined.strip(),
+                                            medium='phone_call',
+                                            call_sid=call_sid,
+                                            direction='outbound'
+                                        )
+                                        logger.debug(f"Logged AI sentence for call {call_sid}: {combined[:50]}...")
+                                        ai_buffer.clear()
+                            except Exception as e:
+                                logger.error(f"Error logging AI response: {e}")
+
+                        # Register conversation logging callbacks
+                        call_gemini_client.on_user_transcript = log_user_transcript
+                        call_gemini_client.on_text_response = log_ai_response
+                        logger.info(f"Registered conversation logging callbacks for call {call_sid}")
                         self.active_connections[call_sid] = {
                             'stream_sid': stream_sid,
                             'websocket': websocket
@@ -550,6 +577,36 @@ class TwilioMediaStreamsHandler:
                     elif event == 'stop':
                         # Stream ended
                         logger.info(f"Stream stopped: {stream_sid}")
+
+                        # Flush any remaining buffered transcripts
+                        try:
+                            if user_buffer and hasattr(self, 'db') and self.db:
+                                combined = ''.join(user_buffer).strip()
+                                if combined:
+                                    self.db.add_conversation_message(
+                                        sender='user',
+                                        message=combined,
+                                        medium='phone_call',
+                                        call_sid=call_sid,
+                                        direction='inbound'
+                                    )
+                                    logger.debug(f"Flushed remaining user text: {combined[:50]}...")
+                                    user_buffer.clear()
+
+                            if ai_buffer and hasattr(self, 'db') and self.db:
+                                combined = ''.join(ai_buffer).strip()
+                                if combined:
+                                    self.db.add_conversation_message(
+                                        sender='assistant',
+                                        message=combined,
+                                        medium='phone_call',
+                                        call_sid=call_sid,
+                                        direction='outbound'
+                                    )
+                                    logger.debug(f"Flushed remaining AI text: {combined[:50]}...")
+                                    ai_buffer.clear()
+                        except Exception as e:
+                            logger.error(f"Error flushing transcript buffers: {e}")
 
                         # Update call status in reminder checker
                         if self.reminder_checker:

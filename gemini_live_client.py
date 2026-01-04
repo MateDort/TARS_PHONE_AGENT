@@ -92,12 +92,12 @@ Be conversational, friendly, and helpful."""
         config = types.LiveConnectConfig(
             # Enable audio response
             response_modalities=["AUDIO"],
-            
+
             # System instructions - API now expects this format
             system_instruction=types.Content(
                 parts=[types.Part(text=self.system_instruction)]
             ) if self.system_instruction else None,
-            
+
             # Voice and audio settings - explicitly configure sample rate
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -106,7 +106,11 @@ Be conversational, friendly, and helpful."""
                     )
                 )
             ),
-            
+
+            # Enable transcription for both input (user) and output (AI) audio
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+
             # Tools (Google Search + custom functions)
             tools=tools
         )
