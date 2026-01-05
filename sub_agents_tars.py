@@ -1161,19 +1161,27 @@ class InterSessionAgent(SubAgent):
         # Create a reminder for Máté to call back
         if self.db:
             try:
-                # Parse callback time and create reminder
-                from dateutil import parser
-                from datetime import datetime
-
                 try:
-                    callback_dt = parser.parse(callback_time, fuzzy=True)
-                    # If parsed date is in the past, assume it's for tomorrow
-                    if callback_dt < datetime.now():
-                        callback_dt = callback_dt.replace(
-                            day=datetime.now().day + 1)
-                except:
-                    # If parsing fails, schedule for 1 hour from now
+                    from dateutil import parser
+                except ImportError:
+                    logger.error(
+                        "CRITICAL: 'python-dateutil' is not installed. Please run 'pip install python-dateutil'. Falling back to a simple reminder.")
+                    # Fallback if dateutil is not installed
+                    reminder_title = f"Call back {caller_name} ({callback_time}) about: {reason}"
+                    # Schedule for 1 hour from now as a simple fallback
                     callback_dt = datetime.now() + timedelta(hours=1)
+                    self.db.add_reminder(
+                        title=reminder_title,
+                        datetime_str=callback_dt.isoformat()
+                    )
+                    return f"I've noted your callback request for {callback_time}. {Config.TARGET_NAME} will get back to you."
+
+                # Parse time using dateutil
+                callback_dt = parser.parse(
+                    callback_time, fuzzy=True, default=datetime.now())
+                # If parsed date is in the past, assume it's for tomorrow
+                if callback_dt < datetime.now():
+                    callback_dt += timedelta(days=1)
 
                 reminder_title = f"Call back {caller_name}: {reason}"
 
@@ -1181,10 +1189,10 @@ class InterSessionAgent(SubAgent):
                     title=reminder_title,
                     datetime_str=callback_dt.isoformat()
                 )
-
                 return f"I've scheduled a callback reminder for {Config.TARGET_NAME} at {callback_dt.strftime('%I:%M %p on %B %d')}. He'll call you back then."
             except Exception as e:
-                logger.error(f"Error scheduling callback: {e}")
+                logger.error(
+                    f"Error parsing callback time or scheduling reminder: {e}")
                 return f"I've noted your callback request for {callback_time}. {Config.TARGET_NAME} will get back to you."
         else:
             return f"I've noted your callback request. {Config.TARGET_NAME} will get back to you."
