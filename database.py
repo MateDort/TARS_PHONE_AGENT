@@ -136,7 +136,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS inter_session_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     message_id TEXT NOT NULL UNIQUE,
-                    from_session_id TEXT NOT NULL,
+                    from_session_id TEXT,
                     to_session_id TEXT,
                     to_session_name TEXT,
                     message_type TEXT NOT NULL,
