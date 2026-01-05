@@ -210,6 +210,11 @@ class TARSPhoneAgent:
 
         logger.info(f"Registered {len(function_map)} sub-agents")
 
+        # Pass function handlers to SessionManager so session-specific clients can use them
+        if self.session_manager:
+            self.session_manager.set_function_handlers(self.gemini_client.function_handlers)
+            logger.info("Function handlers registered with SessionManager")
+
     async def _trigger_reminder_call(self, reminder: dict):
         """Trigger an outbound call for a reminder.
 

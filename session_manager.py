@@ -28,15 +28,17 @@ class SessionManager:
     - Termination and cleanup
     """
 
-    def __init__(self, db, router=None):
+    def __init__(self, db, router=None, function_handlers=None):
         """Initialize Session Manager.
 
         Args:
             db: Database instance for persistence
             router: Optional MessageRouter for inter-agent communication
+            function_handlers: Optional dict of function_name -> handler for GeminiLiveClient
         """
         self.db = db
         self.router = router  # Will be set after router is created
+        self.function_handlers = function_handlers or {}  # Will be set after handlers are registered
 
         # Session registries
         self.sessions: Dict[str, AgentSession] = {}  # session_id -> AgentSession
@@ -47,6 +49,11 @@ class SessionManager:
         self._lock = asyncio.Lock()
 
         logger.info("SessionManager initialized")
+
+    def set_function_handlers(self, handlers: Dict):
+        """Set function handlers after initialization (circular dependency workaround)"""
+        self.function_handlers = handlers
+        logger.info(f"SessionManager registered {len(handlers)} function handlers")
 
     def set_router(self, router):
         """Set message router after initialization (circular dependency workaround)"""
@@ -248,8 +255,10 @@ class SessionManager:
         # Set filtered function declarations
         client.function_declarations = filtered_functions
 
-        # Note: function handlers will be set by the main initialization code
-        # We only filter declarations here, not handlers
+        # Copy function handlers from SessionManager (already registered in main)
+        if self.function_handlers:
+            client.function_handlers = self.function_handlers.copy()
+            logger.debug(f"Copied {len(self.function_handlers)} function handlers to session client")
 
         return client
 
