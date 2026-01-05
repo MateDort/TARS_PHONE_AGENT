@@ -72,9 +72,11 @@ class TARSPhoneAgent:
         # Initialize messaging handler for SMS/WhatsApp (needed for router)
         from messaging_handler import MessagingHandler
         self.messaging_handler = MessagingHandler(
-            gemini_client=self.gemini_client,
             database=self.db,
-            twilio_client=None  # Will be set after twilio_handler created
+            twilio_client=None,  # Will be set after twilio_handler created
+            session_manager=self.session_manager,
+            router=None,  # Will be set after router created
+            twilio_handler=None  # Will be set after twilio_handler created
         )
 
         # Initialize MessageRouter for inter-session communication
@@ -87,6 +89,7 @@ class TARSPhoneAgent:
 
         # Set router reference in session_manager (circular dependency workaround)
         self.session_manager.set_router(self.router)
+        self.messaging_handler.router = self.router
 
         # Initialize reminder checker with multi-session awareness
         self.reminder_checker = ReminderChecker(
@@ -110,6 +113,7 @@ class TARSPhoneAgent:
 
         # Set circular dependencies
         self.messaging_handler.twilio_client = self.twilio_handler.twilio_client
+        self.messaging_handler.twilio_handler = self.twilio_handler
         self.reminder_checker.twilio_handler = self.twilio_handler
         self.reminder_checker.messaging_handler = self.messaging_handler
 

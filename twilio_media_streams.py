@@ -215,6 +215,7 @@ class TwilioMediaStreamsHandler:
             # #endregion
 
             from_number = request.form.get('From')
+            to_number = request.form.get('To')
             message_body = request.form.get('Body')
             message_sid = request.form.get('MessageSid')
 
@@ -222,61 +223,23 @@ class TwilioMediaStreamsHandler:
 
             # Process message asynchronously if messaging handler is available
             if hasattr(self, 'messaging_handler') and self.messaging_handler:
-                # #region debug log
-                try:
-                    with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "twilio_media_streams.py:sms_webhook:before_create_task",
-                                "message": "Attempting create_task", "data": {"has_loop": asyncio._get_running_loop() is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
-
-                # Create async task to process message
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    # No running loop - need to run in new event loop
-                    # #region debug log
-                    try:
-                        with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                            import json
-                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "twilio_media_streams.py:sms_webhook:no_loop",
-                                    "message": "No running event loop detected", "data": {}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                    except:
-                        pass
-                    # #endregion
-
-                    # Run async function in new event loop using thread pool
-                    import threading
-
-                    def run_async():
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        try:
-                            new_loop.run_until_complete(
-                                self.messaging_handler.process_incoming_message(
-                                    from_number=from_number,
-                                    message_body=message_body,
-                                    medium='sms',
-                                    message_sid=message_sid
-                                )
-                            )
-                        finally:
-                            new_loop.close()
-
-                    thread = threading.Thread(target=run_async, daemon=True)
-                    thread.start()
+                coro = self.messaging_handler.process_incoming_message(
+                    from_number=from_number,
+                    message_body=message_body,
+                    medium='sms',
+                    message_sid=message_sid,
+                    to_number=to_number
+                )
+                if self.main_loop and self.main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(coro, self.main_loop)
                 else:
-                    # Running loop exists - can use create_task
-                    asyncio.create_task(
-                        self.messaging_handler.process_incoming_message(
-                            from_number=from_number,
-                            message_body=message_body,
-                            medium='sms',
-                            message_sid=message_sid
-                        )
-                    )
+                    logger.error(
+                        "Cannot process SMS: Main event loop not available. Running in new thread.")
+                    # Fallback for environments where loop isn't passed (e.g. tests)
+                    import threading
+                    thread = threading.Thread(
+                        target=lambda: asyncio.run(coro), daemon=True)
+                    thread.start()
             else:
                 logger.warning(
                     "MessagingHandler not initialized - cannot process SMS")
@@ -288,6 +251,7 @@ class TwilioMediaStreamsHandler:
         def whatsapp_webhook():
             """Handle incoming WhatsApp messages."""
             from_number = request.form.get('From')
+            to_number = request.form.get('To')
             message_body = request.form.get('Body')
             message_sid = request.form.get('MessageSid')
 
@@ -296,39 +260,23 @@ class TwilioMediaStreamsHandler:
 
             # Process message asynchronously if messaging handler is available
             if hasattr(self, 'messaging_handler') and self.messaging_handler:
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    # No running loop - need to run in new event loop
-                    import threading
-
-                    def run_async():
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        try:
-                            new_loop.run_until_complete(
-                                self.messaging_handler.process_incoming_message(
-                                    from_number=from_number,
-                                    message_body=message_body,
-                                    medium='whatsapp',
-                                    message_sid=message_sid
-                                )
-                            )
-                        finally:
-                            new_loop.close()
-
-                    thread = threading.Thread(target=run_async, daemon=True)
-                    thread.start()
+                coro = self.messaging_handler.process_incoming_message(
+                    from_number=from_number,
+                    message_body=message_body,
+                    medium='whatsapp',
+                    message_sid=message_sid,
+                    to_number=to_number
+                )
+                if self.main_loop and self.main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(coro, self.main_loop)
                 else:
-                    # Running loop exists - can use create_task
-                    asyncio.create_task(
-                        self.messaging_handler.process_incoming_message(
-                            from_number=from_number,
-                            message_body=message_body,
-                            medium='whatsapp',
-                            message_sid=message_sid
-                        )
-                    )
+                    logger.error(
+                        "Cannot process WhatsApp: Main event loop not available. Running in new thread.")
+                    # Fallback for environments where loop isn't passed
+                    import threading
+                    thread = threading.Thread(
+                        target=lambda: asyncio.run(coro), daemon=True)
+                    thread.start()
             else:
                 logger.warning(
                     "MessagingHandler not initialized - cannot process WhatsApp")

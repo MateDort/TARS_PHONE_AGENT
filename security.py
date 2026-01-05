@@ -1,4 +1,5 @@
 """Security module for agent session authentication and permission filtering."""
+from agent_session import PermissionLevel
 import logging
 from typing import List, Dict
 from config import Config
@@ -7,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 # Import PermissionLevel from agent_session to avoid circular import issues
-from agent_session import PermissionLevel
 
 
 def authenticate_phone_number(phone: str) -> PermissionLevel:
@@ -19,15 +19,21 @@ def authenticate_phone_number(phone: str) -> PermissionLevel:
     Returns:
         PermissionLevel.FULL for Máté's number, LIMITED for others
     """
-    # Normalize phone numbers for comparison (remove spaces, dashes, etc.)
-    normalized_phone = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
-    normalized_target = Config.TARGET_PHONE_NUMBER.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    # Normalize phone numbers for comparison (remove prefixes, spaces, dashes, etc.)
+    normalized_phone = phone.replace('whatsapp:', '').replace(
+        ' ', '').replace('-', '').replace('(', '').replace(')', '')
+    normalized_target = Config.TARGET_PHONE_NUMBER.replace(
+        ' ', '').replace('-', '').replace('(', '').replace(')', '')
+    normalized_whatsapp_admin = Config.WHATSAPP_ADMIN_NUMBER.replace(
+        ' ', '').replace('-', '').replace('(', '').replace(')', '')
 
-    if normalized_phone.endswith(normalized_target[-10:]):  # Match last 10 digits
+    # Check against both SMS and WhatsApp admin numbers
+    if normalized_phone.endswith(normalized_target[-10:]) or normalized_phone.endswith(normalized_whatsapp_admin[-10:]):
         logger.info(f"Phone {phone} authenticated as Máté (FULL access)")
         return PermissionLevel.FULL
     else:
-        logger.info(f"Phone {phone} authenticated as unknown caller (LIMITED access)")
+        logger.info(
+            f"Phone {phone} authenticated as unknown caller (LIMITED access)")
         return PermissionLevel.LIMITED
 
 
@@ -73,7 +79,8 @@ def filter_functions_by_permission(
         # - broadcast_to_sessions (can only send direct messages)
     }
 
-    filtered = [f for f in all_functions if f.get("name") in allowed_function_names]
+    filtered = [f for f in all_functions if f.get(
+        "name") in allowed_function_names]
 
     logger.info(
         f"LIMITED access: {len(filtered)}/{len(all_functions)} functions available - "

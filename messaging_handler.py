@@ -1,11 +1,13 @@
 """Messaging handler for SMS and WhatsApp via Twilio."""
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 from twilio.rest import Client
 from config import Config
 from database import Database
+from security import authenticate_phone_number, filter_functions_by_permission, get_limited_system_instruction
+from agent_session import PermissionLevel
 
 logger = logging.getLogger(__name__)
 
@@ -13,22 +15,26 @@ logger = logging.getLogger(__name__)
 class MessagingHandler:
     """Handles bidirectional SMS and WhatsApp messaging via Twilio."""
 
-    def __init__(self, gemini_client, database: Database, twilio_client: Client):
+    def __init__(self, database: Database, twilio_client: Client, session_manager=None, router=None, twilio_handler=None):
         """Initialize messaging handler.
 
         Args:
-            gemini_client: GeminiLiveClient instance for AI responses
             database: Database instance for conversation logging
             twilio_client: Twilio Client instance
+            session_manager: SessionManager instance
+            router: MessageRouter instance
+            twilio_handler: TwilioMediaStreamsHandler instance
         """
-        self.gemini_client = gemini_client
         self.db = database
         self.twilio_client = twilio_client
+        self.session_manager = session_manager
+        self.router = router
+        self.twilio_handler = twilio_handler
 
         logger.info("MessagingHandler initialized")
 
     async def process_incoming_message(self, from_number: str, message_body: str,
-                                       medium: str = 'sms', message_sid: str = None):
+                                       medium: str = 'sms', message_sid: str = None, to_number: str = None):
         """Process incoming SMS/WhatsApp message and generate AI response.
 
         Args:
@@ -36,6 +42,7 @@ class MessagingHandler:
             message_body: Message text
             medium: 'sms' or 'whatsapp'
             message_sid: Twilio message SID
+            to_number: The number the message was sent to (bot's number)
         """
         try:
             # #region debug log
@@ -60,6 +67,9 @@ class MessagingHandler:
                 direction='inbound'
             )
 
+            # Authenticate sender to determine permission level
+            permission_level = authenticate_phone_number(from_number)
+
             # Get conversation context for better AI responses
             context = self.db.get_conversation_context(limit=10)
 
@@ -68,16 +78,25 @@ class MessagingHandler:
             current_time = datetime.now().strftime("%I:%M %p")
             current_date = datetime.now().strftime("%A, %B %d, %Y")
 
-            system_instruction = format_text(
-                'elderly_system_instruction',
-                Config.LANGUAGE,
-                current_time=current_time,
-                current_date=current_date
-            )
+            if permission_level == PermissionLevel.FULL:
+                system_instruction = format_text(
+                    'tars_system_instruction',
+                    current_time=current_time,
+                    current_date=current_date,
+                    humor_percentage=Config.HUMOR_PERCENTAGE,
+                    honesty_percentage=Config.HONESTY_PERCENTAGE,
+                    personality=Config.PERSONALITY,
+                    nationality=Config.NATIONALITY
+                )
+            else:
+                # For limited access, start with the base instruction and add constraints
+                system_instruction = format_text('tars_system_instruction', current_time=current_time, current_date=current_date, humor_percentage=Config.HUMOR_PERCENTAGE,
+                                                 honesty_percentage=Config.HONESTY_PERCENTAGE, personality=Config.PERSONALITY, nationality=Config.NATIONALITY)
+                system_instruction += "\n\n" + get_limited_system_instruction()
 
             # IMPORTANT: For SMS/WhatsApp, the AI should NOT call send_message function
-            # It should just return text. The send_message function is only for phone calls.
-            system_instruction += "\n\nIMPORTANT: You are responding via SMS/WhatsApp. Do NOT call the send_message function. Just return your response as text. The send_message function is only for sending links during phone calls."
+            # It should just return text. The send_message function is only for sending links.
+            system_instruction += "\n\nIMPORTANT: You are responding via text message. Do NOT call the send_message function unless you are sending a link. Just return your response as text."
 
             # Add context if available
             if context:
@@ -89,7 +108,8 @@ class MessagingHandler:
             # text-only Gemini client for better performance
             response_text = await self._generate_text_response(
                 message_body,
-                system_instruction
+                system_instruction,
+                permission_level
             )
 
             # #region debug log
@@ -106,7 +126,8 @@ class MessagingHandler:
             self.send_message(
                 to_number=from_number,
                 message_body=response_text,
-                medium=medium
+                medium=medium,
+                from_number=to_number  # Reply from the same number that received the message
             )
 
             logger.info(f"Sent {medium} reply to {from_number}")
@@ -123,16 +144,18 @@ class MessagingHandler:
             except:
                 pass
 
-    async def _generate_text_response(self, message: str, system_instruction: str) -> str:
+    async def _generate_text_response(self, message: str, system_instruction: str, permission_level: PermissionLevel) -> str:
         """Generate text response using Gemini AI (same approach as phone calls).
 
         Args:
             message: User's message
             system_instruction: System instruction with context
+            permission_level: The permission level of the user.
 
         Returns:
             AI response text
         """
+        client = None
         try:
             # Use the same Gemini client as phone calls (google.genai, not deprecated google.generativeai)
             from google import genai
@@ -144,144 +167,81 @@ class MessagingHandler:
                 api_key=Config.GEMINI_API_KEY
             )
 
-            # Use text model (not audio model)
-            model = "models/gemini-2.5-flash"
+            model = "models/gemini-2.0-flash-exp"  # Use same model family as call system
 
             # Get function declarations from sub_agents (same as phone calls)
             from sub_agents_tars import get_function_declarations
-            declarations = get_function_declarations()
+            all_declarations = get_function_declarations()
 
-            # For SMS/WhatsApp, remove send_message function - AI should just return text
-            # send_message is only for phone calls when user requests links
-            if declarations:
-                declarations = [d for d in declarations if d.get(
-                    'name') != 'send_message']
+            # Filter declarations based on permission level
+            declarations = filter_functions_by_permission(
+                permission_level, all_declarations)
 
             # Build tools list
-            # NOTE: generate_content API doesn't support google_search + function_declarations together
-            # So we'll use only function_declarations for now (function calling still works)
-            # Google Search can be added via a function if needed
             tools = []
-
-            # Add custom function declarations if any (same as phone calls)
             if declarations:
                 tools.append({
                     "function_declarations": declarations
                 })
-
-            # If no function declarations, use empty tools (model will still work)
             if not tools:
                 tools = None
 
-            # Generate response using generate_content (text-only, not audio)
-            # Format contents properly
-            contents = types.Content(parts=[types.Part(text=message)])
+            # Build conversation history for the API call
+            conversation_history = [
+                types.Content(parts=[types.Part(text=message)], role="user")
+            ]
 
-            # #region debug log
-            try:
-                with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run2", "hypothesisId": "F", "location": "messaging_handler.py:_generate_text_response:before_api",
-                            "message": "About to call Gemini API", "data": {"model": model, "has_tools": bool(tools), "tools_count": len(tools)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-
-            response = await asyncio.to_thread(
-                client.models.generate_content,
+            response = await client.aio.models.generate_content(
                 model=model,
-                contents=contents,
+                contents=conversation_history,
                 config=types.GenerateContentConfig(
                     system_instruction=types.Content(
                         parts=[types.Part(text=system_instruction)]
                     ) if system_instruction else None,
                     tools=tools if tools else None,
-                    temperature=0.7,
+                    temperature=0.8,
                 )
             )
 
-            # #region debug log
-            try:
-                with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                    import json
-                    has_candidates = bool(response.candidates) if hasattr(
-                        response, 'candidates') else False
-                    parts_count = len(response.candidates[0].content.parts) if (
-                        has_candidates and response.candidates[0].content.parts) else 0
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run2", "hypothesisId": "F", "location": "messaging_handler.py:_generate_text_response:after_api",
-                            "message": "Gemini API response received", "data": {"has_candidates": has_candidates, "parts_count": parts_count}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-
             # Handle function calls if present (same logic as phone calls)
-            # Check for function calls in response
-            function_calls_handled = False
             if response.candidates and response.candidates[0].content.parts:
-                function_responses = []
+                first_part = response.candidates[0].content.parts[0]
+                if hasattr(first_part, 'function_call') and first_part.function_call:
+                    function_call = first_part.function_call
+                    function_name = function_call.name
+                    function_args = dict(function_call.args)
 
-                for part in response.candidates[0].content.parts:
-                    # Check for function_call attribute
-                    if hasattr(part, 'function_call') and part.function_call:
-                        function_calls_handled = True
-                        function_call = part.function_call
-                        function_name = function_call.name if hasattr(
-                            function_call, 'name') else None
+                    logger.info(
+                        f"Function call in message: {function_name}({function_args})")
 
-                        # Extract args - could be dict or object
-                        if hasattr(function_call, 'args'):
-                            if isinstance(function_call.args, dict):
-                                function_args = function_call.args
-                            else:
-                                function_args = dict(function_call.args) if hasattr(
-                                    function_call.args, '__dict__') else {}
-                        else:
-                            function_args = {}
+                    # Execute the function
+                    result = await self._execute_function(function_name, function_args)
 
-                        if function_name:
-                            logger.info(
-                                f"Function call in message: {function_name}")
-
-                            # Execute the function through registered handlers
-                            result = await self._execute_function(function_name, function_args)
-
-                            # Build function response
-                            function_response = types.FunctionResponse(
-                                name=function_name,
-                                response={'result': str(result)}
-                            )
-
-                            # Add ID if present
-                            if hasattr(function_call, 'id'):
-                                function_response.id = function_call.id
-
-                            function_responses.append(function_response)
-
-                # If we handled function calls, send responses back
-                if function_calls_handled and function_responses:
-                    # Build conversation history
-                    conversation = [
-                        types.Content(parts=[types.Part(text=message)])
-                    ]
-
-                    # Add function responses
-                    for fr in function_responses:
-                        conversation.append(
-                            types.Content(
-                                parts=[types.Part(function_response=fr)])
+                    # Append the AI's function call and the result to the conversation
+                    conversation_history.append(response.candidates[0].content)
+                    conversation_history.append(
+                        types.Content(
+                            parts=[
+                                types.Part(
+                                    function_response=types.FunctionResponse(
+                                        name=function_name,
+                                        response={'result': str(result)}
+                                    )
+                                )
+                            ]
                         )
+                    )
 
                     # Get final response with function results
-                    response = await asyncio.to_thread(
-                        client.models.generate_content,
+                    response = await client.aio.models.generate_content(
                         model=model,
-                        contents=conversation,
+                        contents=conversation_history,
                         config=types.GenerateContentConfig(
                             system_instruction=types.Content(
                                 parts=[types.Part(text=system_instruction)]
                             ) if system_instruction else None,
                             tools=tools if tools else None,
-                            temperature=0.7,
+                            temperature=0.8,
                         )
                     )
 
@@ -300,8 +260,11 @@ class MessagingHandler:
             import traceback
             logger.error(traceback.format_exc())
             return "I'm having trouble processing your request right now. Please try again."
+        finally:
+            if client:
+                client.close()
 
-    async def _execute_function(self, function_name: str, args: dict) -> str:
+    async def _execute_function(self, function_name: str, args: Dict[str, Any]) -> str:
         """Execute a function call from the AI.
 
         Args:
@@ -315,60 +278,39 @@ class MessagingHandler:
             from sub_agents_tars import get_all_agents
 
             # Get agents
-            agents = get_all_agents(self.db)
+            agents = get_all_agents(
+                db=self.db,
+                messaging_handler=self,
+                session_manager=self.session_manager,
+                router=self.router,
+                twilio_handler=self.twilio_handler
+            )
 
             # Map function names to agents
             function_map = {
+                "adjust_config": agents.get("config"),
                 "manage_reminder": agents["reminder"],
-                "lookup_user_info": agents["user_bio"],
                 "lookup_contact": agents["contacts"],
                 "send_notification": agents["notification"],
+                "send_message": agents.get("message"),
+                "make_goal_call": agents.get("outbound_call"),
+                "send_message_to_session": agents.get("inter_session"),
+                "request_user_confirmation": agents.get("inter_session"),
+                "broadcast_to_sessions": agents.get("inter_session"),
+                "list_active_sessions": agents.get("inter_session"),
+                "take_message_for_mate": agents.get("inter_session"),
+                "schedule_callback": agents.get("inter_session"),
+                "hangup_call": agents.get("inter_session"),
             }
 
             if function_name in function_map:
                 agent = function_map[function_name]
-                result = await agent.execute(args)
-                return str(result)
+                if agent:
+                    return await agent.execute(args)
+                return f"Error: Agent for {function_name} not available."
             elif function_name == "get_current_time":
                 now = datetime.now()
-                current_time = now.strftime("%I:%M %p")
-                current_date = now.strftime("%A, %B %d, %Y")
-                return f"The current time is {current_time} on {current_date}"
-            elif function_name == "send_message":
-                # Handle send_message function
-                # NOTE: This should NOT be called during normal message processing
-                # It's only for sending links/messages during phone calls
-                # For SMS responses, we should just return text, not call this function
-                action = args.get("action", "send")
-                message = args.get("message", "")
-                link = args.get("link", "")
-                medium = args.get("medium", "sms")
-
-                # #region debug log
-                try:
-                    with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "messaging_handler.py:_execute_function:send_message",
-                                "message": "send_message function called", "data": {"action": action, "has_link": bool(link), "medium": medium}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
-
-                if action == "send_link":
-                    self.send_link(
-                        to_number=Config.TARGET_PHONE_NUMBER,
-                        url=link,
-                        description=message,
-                        medium=medium
-                    )
-                    return f"Link sent via {medium}"
-                else:
-                    self.send_message(
-                        to_number=Config.TARGET_PHONE_NUMBER,
-                        message_body=message,
-                        medium=medium
-                    )
-                    return f"Message sent via {medium}"
+                return f"The current time is {now.strftime('%I:%M %p')} on {now.strftime('%A, %B %d, %Y')}."
             else:
                 return f"Unknown function: {function_name}"
 
@@ -376,13 +318,14 @@ class MessagingHandler:
             logger.error(f"Error executing function {function_name}: {e}")
             return f"Error executing function: {e}"
 
-    def send_message(self, to_number: str, message_body: str, medium: str = 'sms') -> Optional[str]:
+    def send_message(self, to_number: str, message_body: str, medium: str = 'sms', from_number: str = None) -> Optional[str]:
         """Send outbound SMS or WhatsApp message.
 
         Args:
             to_number: Recipient's phone number
             message_body: Message text
             medium: 'sms' or 'whatsapp'
+            from_number: Optional sender number override
 
         Returns:
             Message SID or None if failed
@@ -399,7 +342,8 @@ class MessagingHandler:
             # #endregion
 
             # Format phone numbers for Twilio
-            from_number = Config.TWILIO_PHONE_NUMBER
+            if not from_number:
+                from_number = Config.TWILIO_PHONE_NUMBER
 
             # #region debug log
             try:
@@ -412,6 +356,10 @@ class MessagingHandler:
             # #endregion
 
             if medium == 'whatsapp':
+                # Use dedicated WhatsApp number if available
+                if Config.WHATSAPP_NUMBER and from_number == Config.TWILIO_PHONE_NUMBER:
+                    from_number = Config.WHATSAPP_NUMBER
+
                 # WhatsApp requires 'whatsapp:' prefix
                 if not from_number.startswith('whatsapp:'):
                     from_number = f'whatsapp:{from_number}'

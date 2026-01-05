@@ -14,7 +14,9 @@ class Config:
     TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
     TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '+14452344131')
     TARGET_PHONE_NUMBER = os.getenv('TARGET_PHONE_NUMBER', '+14049525557')
-    TARGET_NAME = os.getenv('TARGET_NAME', 'Máté Dort')  # For unknown caller greeting
+    WHATSAPP_ADMIN_NUMBER = os.getenv('WHATSAPP_ADMIN_NUMBER', '+36202351624')
+    # For unknown caller greeting
+    TARGET_NAME = os.getenv('TARGET_NAME', 'Máté Dort')
 
     # Webhook Configuration
     WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL', 'http://localhost:5002')
@@ -22,36 +24,47 @@ class Config:
 
     # Gemini Configuration (primary for voice + LLM)
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'models/gemini-2.5-flash-native-audio-preview-12-2025')
-    GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')  # Voice name: Kore, Puck, or Charon
+    GEMINI_MODEL = os.getenv(
+        'GEMINI_MODEL', 'models/gemini-2.5-flash-native-audio-preview-12-2025')
+    # Voice name: Kore, Puck, or Charon
+    GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')
 
     # Agent Configuration
-    AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower() == 'true'  # Auto-make call on startup
+    AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower(
+    ) == 'true'  # Auto-make call on startup
 
     # WebSocket Configuration for Media Streams
     WEBSOCKET_PORT = int(os.getenv('WEBSOCKET_PORT', '5001'))
-    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', '')  # Separate ngrok URL for WebSocket
+    # Separate ngrok URL for WebSocket
+    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', '')
 
     # Audio Configuration
-    AUDIO_SAMPLE_RATE = int(os.getenv('AUDIO_SAMPLE_RATE', '8000'))  # Twilio uses 8kHz μ-law
+    # Twilio uses 8kHz μ-law
+    AUDIO_SAMPLE_RATE = int(os.getenv('AUDIO_SAMPLE_RATE', '8000'))
 
     # Messaging Configuration
     ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'
     ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
-    WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', '')  # Format: whatsapp:+1234567890
+    # Format: whatsapp:+1234567890
+    WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', 'whatsapp:+14155238886')
 
     # TARS Personality Configuration (Dynamically Editable)
     HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))  # Default 70%
-    HONESTY_PERCENTAGE = int(os.getenv('HONESTY_PERCENTAGE', '95'))  # Default 95%
-    PERSONALITY = os.getenv('PERSONALITY', 'normal')  # Options: chatty, normal, brief
+    HONESTY_PERCENTAGE = int(
+        os.getenv('HONESTY_PERCENTAGE', '95'))  # Default 95%
+    # Options: chatty, normal, brief
+    PERSONALITY = os.getenv('PERSONALITY', 'normal')
     NATIONALITY = os.getenv('NATIONALITY', 'British')  # Default: British
 
     # Delivery Method Configuration
-    REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')  # Options: call, message, both
-    CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')  # Options: call, message, both
+    # Options: call, message, both
+    REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')
+    # Options: call, message, both
+    CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')
 
     # Agent Hub Configuration
-    MAX_CONCURRENT_SESSIONS = int(os.getenv('MAX_CONCURRENT_SESSIONS', '10'))  # Hard limit for concurrent calls
+    # Hard limit for concurrent calls
+    MAX_CONCURRENT_SESSIONS = int(os.getenv('MAX_CONCURRENT_SESSIONS', '10'))
 
     @classmethod
     def validate(cls):
@@ -78,17 +91,21 @@ class Config:
         # Validate personality setting
         valid_personalities = ['chatty', 'normal', 'brief']
         if cls.PERSONALITY.lower() not in valid_personalities:
-            errors.append(f"PERSONALITY must be one of: {', '.join(valid_personalities)}")
+            errors.append(
+                f"PERSONALITY must be one of: {', '.join(valid_personalities)}")
 
         # Validate delivery method settings
         valid_delivery_methods = ['call', 'message', 'both']
         if cls.REMINDER_DELIVERY.lower() not in valid_delivery_methods:
-            errors.append(f"REMINDER_DELIVERY must be one of: {', '.join(valid_delivery_methods)}")
+            errors.append(
+                f"REMINDER_DELIVERY must be one of: {', '.join(valid_delivery_methods)}")
         if cls.CALLBACK_REPORT.lower() not in valid_delivery_methods:
-            errors.append(f"CALLBACK_REPORT must be one of: {', '.join(valid_delivery_methods)}")
+            errors.append(
+                f"CALLBACK_REPORT must be one of: {', '.join(valid_delivery_methods)}")
 
         if errors:
-            raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
+            raise ValueError("Configuration errors:\n" +
+                             "\n".join(f"  - {e}" for e in errors))
 
         return True
 
@@ -107,6 +124,7 @@ class Config:
         cls.GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')
         cls.AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower() == 'true'
         cls.ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'
-        cls.ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
+        cls.ENABLE_WHATSAPP = os.getenv(
+            'ENABLE_WHATSAPP', 'true').lower() == 'true'
 
         return True
