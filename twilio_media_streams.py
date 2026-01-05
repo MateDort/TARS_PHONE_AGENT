@@ -352,15 +352,32 @@ class TwilioMediaStreamsHandler:
                         logger.info(
                             f"Stream started: {stream_sid} for call {call_sid}")
 
-                        # Get caller's phone number from Twilio Call API
+                        # Get call details from Twilio Call API
                         from_number = await self._get_caller_phone(call_sid)
-                        print(f"   📱 Caller: {from_number}")
+
+                        # Determine authentication phone number based on call direction
+                        # For outbound reminder calls to Máté, authenticate based on TO number
+                        # For inbound calls or outbound goal calls, authenticate based on FROM number
+                        if self.pending_reminder and "CALL OBJECTIVE" not in (self.pending_reminder or ""):
+                            # This is an outbound reminder call to Máté - use TO number
+                            try:
+                                call = self.twilio_client.calls(call_sid).fetch()
+                                to_number = getattr(call, 'to', None) or getattr(call, 'to_formatted', None) or call._properties.get('to', from_number)
+                                auth_phone = to_number
+                                print(f"   📱 Calling: {to_number} (outbound reminder)")
+                            except Exception as e:
+                                logger.error(f"Error fetching TO number: {e}")
+                                auth_phone = from_number
+                        else:
+                            # Inbound call or outbound goal call - use FROM number
+                            auth_phone = from_number
+                            print(f"   📱 Caller: {from_number}")
 
                         # CREATE SESSION via SessionManager
                         # This handles authentication, naming, and permission-filtered function declarations
                         session = await self.session_manager.create_session(
                             call_sid=call_sid,
-                            phone_number=from_number,
+                            phone_number=auth_phone,
                             websocket=websocket,
                             stream_sid=stream_sid,
                             purpose=self.pending_reminder if "CALL OBJECTIVE" in (
