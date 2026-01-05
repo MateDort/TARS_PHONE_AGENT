@@ -945,7 +945,7 @@ class OutboundCallAgent(SubAgent):
 class InterSessionAgent(SubAgent):
     """Handles inter-session communication and coordination for agent hub."""
 
-    def __init__(self, session_manager=None, router=None, db=None):
+    def __init__(self, session_manager=None, router=None, db=None, twilio_handler=None):
         super().__init__(
             name="inter_session",
             description="Inter-agent communication and coordination"
@@ -953,6 +953,7 @@ class InterSessionAgent(SubAgent):
         self.session_manager = session_manager
         self.router = router
         self.db = db
+        self.twilio_handler = twilio_handler
 
     async def execute(self, args: Dict[str, Any]) -> str:
         """Execute inter-session operation.
@@ -977,6 +978,8 @@ class InterSessionAgent(SubAgent):
             return await self._take_message(args)
         elif action == "schedule_callback":
             return await self._schedule_callback(args)
+        elif action == "hangup":
+            return await self._hangup_call(args)
         else:
             return f"Unknown action: {action}"
 
@@ -1197,8 +1200,42 @@ class InterSessionAgent(SubAgent):
         else:
             return f"I've noted your callback request. {Config.TARGET_NAME} will get back to you."
 
+    async def _hangup_call(self, args: Dict[str, Any]) -> str:
+        """Hang up a specific call session."""
+        if not self.session_manager or not self.twilio_handler:
+            return "Call management is not available, sir."
+
+        target_name = args.get("target_session_name")
+        if not target_name:
+            return "Please specify which call to hang up using 'target_session_name'."
+
+        source_session = args.get('_source_session')
+
+        if target_name.lower() == 'current':
+            if source_session:
+                target_session = source_session
+            else:
+                return "I cannot determine the 'current' call to hang up."
+        else:
+            target_session = await self.session_manager.get_session_by_name(target_name)
+
+        if not target_session:
+            return f"I could not find an active session named '{target_name}' to hang up."
+
+        if not target_session.is_active():
+            return f"The session '{target_name}' is not currently active."
+
+        # Use the twilio_handler to hang up the call
+        success = self.twilio_handler.hangup_call(target_session.call_sid)
+
+        if success:
+            return f"The call with '{target_session.session_name}' has been terminated, sir."
+        else:
+            return f"I was unable to terminate the call with '{target_session.session_name}' due to an error."
 
 # Agent registry
+
+
 def get_all_agents(db: Database, messaging_handler=None, system_reloader_callback=None, twilio_handler=None, session_manager=None, router=None) -> Dict[str, SubAgent]:
     """Get all available sub-agents for TARS.
 
@@ -1228,7 +1265,7 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     # Add inter-session agent if session_manager and router are provided
     if session_manager and router:
         agents["inter_session"] = InterSessionAgent(
-            session_manager, router, db)
+            session_manager, router, db, twilio_handler)
 
     return agents
 
@@ -1596,6 +1633,24 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action", "callback_time", "reason"]
+            }
+        },
+        {
+            "name": "hangup_call",
+            "description": "Hang up or terminate an active phone call session. Use this when you need to end a specific call, including your own. Examples: 'hang up this call', 'terminate the call with the barber shop'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'hangup'"
+                    },
+                    "target_session_name": {
+                        "type": "STRING",
+                        "description": "The name of the session to hang up (e.g., 'Call with +14045565930', 'Call with Barber Shop'). Use 'current' to hang up the call you are on."
+                    }
+                },
+                "required": ["action", "target_session_name"]
             }
         }
     ]

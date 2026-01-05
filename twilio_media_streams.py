@@ -844,6 +844,25 @@ Brief summary:"""
             # Fallback to simple format if AI summary fails
             return f"Call completed. Goal was: {goal['goal_description']}"
 
+    def hangup_call(self, call_sid: str) -> bool:
+        """Hang up an active call by its SID.
+
+        Args:
+            call_sid: The SID of the call to hang up.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            logger.info(f"Attempting to hang up call: {call_sid}")
+            self.twilio_client.calls(call_sid).update(status='completed')
+            logger.info(f"Successfully hung up call: {call_sid}")
+            return True
+        except Exception as e:
+            # Log error but don't crash. The call might already be over.
+            logger.error(f"Error hanging up call {call_sid}: {e}")
+            return False
+
     def make_call(self, to_number: str = None, from_number: str = None, reminder_message: str = None) -> str:
         """Make an outbound call.
 

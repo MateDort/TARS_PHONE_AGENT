@@ -180,6 +180,7 @@ class TARSPhoneAgent:
             "list_active_sessions": agents.get("inter_session"),
             "take_message_for_mate": agents.get("inter_session"),
             "schedule_callback": agents.get("inter_session"),
+            "hangup_call": agents.get("inter_session"),
         }
 
         for declaration in declarations:
