@@ -33,3 +33,16 @@ in a scenario where mate main calls 3 diferent hotels drury hilton and suit inn 
 
 at the end send the end offers to mate main to ask which one he wants
 this routing system should allow infinite phone calls and routings (obviusly not gonna happen but it can work very nicely)
+
+
+Next Steps After Implementation
+Future Enhancements
+PIN Code Authentication: Allow Máté to authenticate from other phones
+Session Persistence: Save session state to resume after disconnect
+Advanced Routing: Priority queues, message batching, delivery guarantees
+Web Dashboard: View all active sessions, message history, transcripts
+Voice Biometrics: Authenticate by voice instead of phone number
+Optional Features
+Conference Calls: Merge multiple sessions into one call
+Session Transfer: Move conversation from SMS to call or vice versa
+Scheduled Sessions: Pre-plan multi-call coordination (e.g., "call 5 hotels tomorrow at 10am")

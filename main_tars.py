@@ -143,7 +143,8 @@ class TARSPhoneAgent:
         # Update the Gemini client's system instruction
         if hasattr(self.gemini_client, 'system_instruction'):
             self.gemini_client.system_instruction = system_instruction
-            logger.info("System instruction reloaded with updated configuration")
+            logger.info(
+                "System instruction reloaded with updated configuration")
 
     def _register_sub_agents(self):
         """Register all sub-agents with the Gemini client."""
@@ -168,8 +169,10 @@ class TARSPhoneAgent:
             "manage_reminder": agents["reminder"],
             "lookup_contact": agents["contacts"],
             "send_notification": agents["notification"],
-            "send_message": agents.get("message"),  # May be None if messaging not available
-            "make_goal_call": agents.get("outbound_call"),  # May be None if twilio not available
+            # May be None if messaging not available
+            "send_message": agents.get("message"),
+            # May be None if twilio not available
+            "make_goal_call": agents.get("outbound_call"),
             # InterSessionAgent functions
             "send_message_to_session": agents.get("inter_session"),
             "request_user_confirmation": agents.get("inter_session"),
@@ -186,7 +189,8 @@ class TARSPhoneAgent:
 
                 # Skip if agent is None (e.g., message agent when messaging not available)
                 if agent is None:
-                    logger.warning(f"Skipping function {fn_name} - agent not available")
+                    logger.warning(
+                        f"Skipping function {fn_name} - agent not available")
                     continue
 
                 # Create wrapper handler
@@ -212,14 +216,16 @@ class TARSPhoneAgent:
                         "message": f"The current time is {current_time} on {current_date}, sir."
                     }
 
-                self.gemini_client.register_function(declaration, get_time_handler)
+                self.gemini_client.register_function(
+                    declaration, get_time_handler)
                 logger.info(f"Registered function: {fn_name} -> time utility")
 
         logger.info(f"Registered {len(function_map)} sub-agents")
 
         # Pass function handlers to SessionManager so session-specific clients can use them
         if self.session_manager:
-            self.session_manager.set_function_handlers(self.gemini_client.function_handlers)
+            self.session_manager.set_function_handlers(
+                self.gemini_client.function_handlers)
             logger.info("Function handlers registered with SessionManager")
 
     async def _trigger_reminder_call(self, reminder: dict):
@@ -233,7 +239,8 @@ class TARSPhoneAgent:
         try:
             # Make outbound call via Twilio with reminder message
             reminder_message = f"Sir, you have a reminder: {reminder['title']}"
-            call_sid = self.twilio_handler.make_call(reminder_message=reminder_message)
+            call_sid = self.twilio_handler.make_call(
+                reminder_message=reminder_message)
             logger.info(f"Reminder call initiated: {call_sid}")
 
         except Exception as e:
@@ -248,12 +255,16 @@ class TARSPhoneAgent:
     async def start_async(self):
         """Start TARS phone agent (async)."""
         try:
+            # Set main loop in twilio handler for thread-safe async execution from Flask
+            self.twilio_handler.set_main_loop(asyncio.get_running_loop())
+
             # Start message router for inter-session communication
             await self.router.start()
             logger.info("Message router started")
 
             # Start reminder checker in background
-            self.reminder_task = asyncio.create_task(self.reminder_checker.start())
+            self.reminder_task = asyncio.create_task(
+                self.reminder_checker.start())
             logger.info("Reminder checker started")
 
             # Start WebSocket server for Media Streams in background
@@ -268,16 +279,19 @@ class TARSPhoneAgent:
             await asyncio.sleep(2)
 
             logger.info("=" * 60)
-            logger.info("TARS - Máté's Personal Assistant Ready (Agent Hub Enabled)")
+            logger.info(
+                "TARS - Máté's Personal Assistant Ready (Agent Hub Enabled)")
             logger.info("=" * 60)
             logger.info("Features:")
             logger.info("  ✓ Smart reminders (automatic calls)")
             logger.info("  ✓ Contact management")
             logger.info("  ✓ Dynamic personality adjustment")
-            logger.info(f"  ✓ Humor: {Config.HUMOR_PERCENTAGE}% | Honesty: {Config.HONESTY_PERCENTAGE}%")
+            logger.info(
+                f"  ✓ Humor: {Config.HUMOR_PERCENTAGE}% | Honesty: {Config.HONESTY_PERCENTAGE}%")
             logger.info("  ✓ Google Search for current info")
             logger.info("  ✓ Natural British voice conversations")
-            logger.info("  ✓ Multi-session agent hub (up to 10 concurrent calls)")
+            logger.info(
+                "  ✓ Multi-session agent hub (up to 10 concurrent calls)")
             logger.info("  ✓ Inter-agent communication & coordination")
             logger.info("=" * 60)
             logger.info("Waiting for calls...")
@@ -345,9 +359,11 @@ class TARSPhoneAgent:
         # Option to make outbound call
         if hasattr(Config, 'AUTO_CALL') and Config.AUTO_CALL:
             try:
-                logger.info(f"Making outbound call to {Config.TARGET_PHONE_NUMBER}...")
+                logger.info(
+                    f"Making outbound call to {Config.TARGET_PHONE_NUMBER}...")
                 call_sid = self.twilio_handler.make_call()
-                logger.info(f"Call initiated successfully. Call SID: {call_sid}")
+                logger.info(
+                    f"Call initiated successfully. Call SID: {call_sid}")
             except Exception as e:
                 logger.error(f"Error making call: {e}")
 

@@ -38,12 +38,15 @@ class SessionManager:
         """
         self.db = db
         self.router = router  # Will be set after router is created
-        self.function_handlers = function_handlers or {}  # Will be set after handlers are registered
+        # Will be set after handlers are registered
+        self.function_handlers = function_handlers or {}
 
         # Session registries
-        self.sessions: Dict[str, AgentSession] = {}  # session_id -> AgentSession
+        # session_id -> AgentSession
+        self.sessions: Dict[str, AgentSession] = {}
         self.call_sid_to_session: Dict[str, str] = {}  # call_sid -> session_id
-        self.phone_to_sessions: Dict[str, List[str]] = {}  # phone -> [session_ids]
+        # phone -> [session_ids]
+        self.phone_to_sessions: Dict[str, List[str]] = {}
 
         # Thread-safe lock for concurrent access
         self._lock = asyncio.Lock()
@@ -53,7 +56,8 @@ class SessionManager:
     def set_function_handlers(self, handlers: Dict):
         """Set function handlers after initialization (circular dependency workaround)"""
         self.function_handlers = handlers
-        logger.info(f"SessionManager registered {len(handlers)} function handlers")
+        logger.info(
+            f"SessionManager registered {len(handlers)} function handlers")
 
     def set_router(self, router):
         """Set message router after initialization (circular dependency workaround)"""
@@ -137,6 +141,9 @@ class SessionManager:
             # Register with router (if available)
             if self.router:
                 await self.router.register_session(session)
+
+            # Inject session context into handlers so agents know who they are
+            self._inject_session_context(session)
 
             logger.info(
                 f"Created session {session_id[:8]}: {session_name} "
@@ -258,9 +265,39 @@ class SessionManager:
         # Copy function handlers from SessionManager (already registered in main)
         if self.function_handlers:
             client.function_handlers = self.function_handlers.copy()
-            logger.debug(f"Copied {len(self.function_handlers)} function handlers to session client")
+            logger.debug(
+                f"Copied {len(self.function_handlers)} function handlers to session client")
 
         return client
+
+    def _inject_session_context(self, session: AgentSession):
+        """Wrap inter-session handlers to inject the source session object.
+
+        This allows the InterSessionAgent to know which session is calling it,
+        so messages are correctly attributed (e.g. "From Call with Helen" instead of "System").
+        """
+        client = session.gemini_client
+
+        # Functions that need session context
+        context_fns = [
+            "send_message_to_session",
+            "request_user_confirmation",
+            "broadcast_to_sessions",
+            "take_message_for_mate",
+            "schedule_callback"
+        ]
+
+        for name in context_fns:
+            if name in client.function_handlers:
+                original = client.function_handlers[name]
+
+                # Create wrapper that injects session into args
+                async def wrapper(args, orig=original, sess=session):
+                    if isinstance(args, dict):
+                        args['_source_session'] = sess
+                    return await orig(args)
+
+                client.function_handlers[name] = wrapper
 
     async def get_session(self, session_id: str) -> Optional[AgentSession]:
         """Get session by session ID.
@@ -342,9 +379,27 @@ class SessionManager:
         Returns:
             AgentSession if found and active, None otherwise
         """
+        target = session_name.lower().strip()
+        candidates = []
+
         for session in self.sessions.values():
-            if session.session_name == session_name and session.is_active():
+            if not session.is_active():
+                continue
+
+            name = session.session_name.lower()
+
+            # 1. Exact match
+            if name == target:
                 return session
+
+            # 2. Fuzzy match: target in name (e.g. "Máté (main)" in "Call with Máté (main)")
+            if target in name:
+                candidates.append(session)
+
+        # If we found exactly one candidate, return it
+        if len(candidates) == 1:
+            return candidates[0]
+
         return None
 
     async def terminate_session(self, session_id: str, reason: str = "completed"):
@@ -357,7 +412,8 @@ class SessionManager:
         async with self._lock:
             session = self.sessions.get(session_id)
             if not session:
-                logger.warning(f"Attempted to terminate unknown session {session_id[:8]}")
+                logger.warning(
+                    f"Attempted to terminate unknown session {session_id[:8]}")
                 return
 
             # Mark session as completed or failed
@@ -399,7 +455,8 @@ class SessionManager:
         if session_id:
             await self.terminate_session(session_id, reason)
         else:
-            logger.warning(f"Attempted to terminate session with unknown call_sid {call_sid}")
+            logger.warning(
+                f"Attempted to terminate session with unknown call_sid {call_sid}")
 
     async def broadcast_to_sessions(
         self,
@@ -446,10 +503,12 @@ class SessionManager:
         """
         try:
             # Get conversation from this call
-            conversations = self.db.get_conversations_by_call_sid(session.call_sid)
+            conversations = self.db.get_conversations_by_call_sid(
+                session.call_sid)
 
             if not conversations or len(conversations) == 0:
-                logger.debug(f"No conversation to summarize for {session.session_name}")
+                logger.debug(
+                    f"No conversation to summarize for {session.session_name}")
                 return
 
             # Build summary from conversation
@@ -459,7 +518,8 @@ class SessionManager:
                     caller_messages.append(conv['message'])
 
             if not caller_messages:
-                logger.debug(f"No caller messages to summarize for {session.session_name}")
+                logger.debug(
+                    f"No caller messages to summarize for {session.session_name}")
                 return
 
             # Create concise summary
@@ -476,7 +536,8 @@ class SessionManager:
                 target="user",
                 message_type="conversation_summary"
             )
-            logger.info(f"Sent conversation summary for {session.session_name} to Máté")
+            logger.info(
+                f"Sent conversation summary for {session.session_name} to Máté")
 
         except Exception as e:
             logger.error(f"Error sending conversation summary: {e}")
@@ -489,7 +550,8 @@ class SessionManager:
         """
         all_sessions = list(self.sessions.values())
         active = [s for s in all_sessions if s.is_active()]
-        completed = [s for s in all_sessions if s.status == SessionStatus.COMPLETED]
+        completed = [s for s in all_sessions if s.status ==
+                     SessionStatus.COMPLETED]
         failed = [s for s in all_sessions if s.status == SessionStatus.FAILED]
 
         return {

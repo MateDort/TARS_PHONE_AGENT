@@ -48,6 +48,7 @@ class Database:
                     name TEXT NOT NULL,
                     relation TEXT,
                     phone TEXT,
+                    email TEXT,
                     birthday TEXT,
                     notes TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -175,11 +176,30 @@ class Database:
             """)
 
             self.conn.commit()
+
+            # Run migrations
+            self._run_migrations()
+
             logger.info(f"TARS database initialized at {self.db_path}")
 
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
             raise
+
+    def _run_migrations(self):
+        """Run database migrations for schema updates."""
+        try:
+            # Check if email column exists in contacts table
+            cursor = self.conn.execute("PRAGMA table_info(contacts)")
+            columns = [row[1] for row in cursor.fetchall()]
+
+            if 'email' not in columns:
+                logger.info("Adding email column to contacts table")
+                self.conn.execute("ALTER TABLE contacts ADD COLUMN email TEXT")
+                self.conn.commit()
+                logger.info("Email column added successfully")
+        except Exception as e:
+            logger.warning(f"Migration error (non-critical): {e}")
 
     # ==================== REMINDERS ====================
 
@@ -345,22 +365,23 @@ class Database:
     # ==================== CONTACTS ====================
 
     def add_contact(self, name: str, relation: str = None, phone: str = None,
-                   birthday: str = None, notes: str = None) -> int:
+                   email: str = None, birthday: str = None, notes: str = None) -> int:
         """Add a new contact.
 
         Args:
             name: Contact name
             relation: Relationship (e.g., "Girlfriend", "Friend", "Doctor")
             phone: Phone number
+            email: Email address
             birthday: Birthday in ISO format (YYYY-MM-DD)
-            notes: Additional notes
+            notes: Additional notes or bio
 
         Returns:
             Contact ID
         """
         cursor = self.conn.execute(
-            "INSERT INTO contacts (name, relation, phone, birthday, notes) VALUES (?, ?, ?, ?, ?)",
-            (name, relation, phone, birthday, notes)
+            "INSERT INTO contacts (name, relation, phone, email, birthday, notes) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, relation, phone, email, birthday, notes)
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -400,7 +421,7 @@ class Database:
         Returns:
             True if updated, False otherwise
         """
-        allowed_fields = ['name', 'relation', 'phone', 'birthday', 'notes']
+        allowed_fields = ['name', 'relation', 'phone', 'email', 'birthday', 'notes']
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:

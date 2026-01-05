@@ -177,7 +177,8 @@ class MessageRouter:
                 logger.error(f"Invalid target type: {type(target)}")
 
         except Exception as e:
-            logger.error(f"Error routing message {message_id[:8]}: {e}", exc_info=True)
+            logger.error(
+                f"Error routing message {message_id[:8]}: {e}", exc_info=True)
             await self._handle_delivery_failure(msg, e)
 
     async def _route_to_user(self, msg: Dict):
@@ -240,7 +241,8 @@ class MessageRouter:
             if session and session.is_active():
                 delivery_tasks.append(self._deliver_to_session(session, msg))
             else:
-                logger.warning(f"Broadcast target '{session_name}' not found or not active")
+                logger.warning(
+                    f"Broadcast target '{session_name}' not found or not active")
 
         if delivery_tasks:
             # Deliver to all targets concurrently
@@ -288,7 +290,8 @@ class MessageRouter:
         try:
             # Send to Gemini client with timeout
             await asyncio.wait_for(
-                target_session.gemini_client.send_text(announcement, end_of_turn=True),
+                target_session.gemini_client.send_text(
+                    announcement, end_of_turn=True),
                 timeout=10.0
             )
 
@@ -405,7 +408,8 @@ class MessageRouter:
             try:
                 await from_session.gemini_client.send_text(error_msg, end_of_turn=True)
             except Exception as e:
-                logger.error(f"Failed to notify sender of delivery failure: {e}")
+                logger.error(
+                    f"Failed to notify sender of delivery failure: {e}")
 
         # Fallback: notify user via SMS
         notification = (
@@ -413,11 +417,13 @@ class MessageRouter:
             f"'{target_name}' (session not active):\n\n{msg['message']}"
         )
 
-        await self._fallback_to_user({
-            **msg,
-            'message': notification,
-            'message_type': 'notification'
-        })
+        # Create a new message dict for the notification to avoid ID collision
+        notification_msg = msg.copy()
+        notification_msg['message_id'] = str(uuid.uuid4())
+        notification_msg['message'] = notification
+        notification_msg['message_type'] = 'notification'
+
+        await self._fallback_to_user(notification_msg)
 
         # Log failed delivery
         self.db.add_inter_session_message(

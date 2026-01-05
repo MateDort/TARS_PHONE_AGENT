@@ -40,6 +40,7 @@ class TwilioMediaStreamsHandler:
         self.messaging_handler = messaging_handler
         self.session_manager = session_manager
         self.router = router
+        self.main_loop = None
 
         # WebSocket state (deprecated - sessions now managed by SessionManager)
         self.websocket_server = None
@@ -53,6 +54,10 @@ class TwilioMediaStreamsHandler:
         self.is_reconnecting = False
         # Buffer up to 50 packets (~1 second of audio)
         self.max_buffer_size = 50
+
+    def set_main_loop(self, loop):
+        """Set the main event loop for thread-safe scheduling from Flask threads."""
+        self.main_loop = loop
 
     def _setup_routes(self):
         """Set up Flask routes for Twilio webhooks."""
@@ -166,7 +171,12 @@ class TwilioMediaStreamsHandler:
                             logger.error(f"Error sending callback: {e}")
 
                     # Run in background
-                    asyncio.create_task(send_callback())
+                    if self.main_loop and self.main_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            send_callback(), self.main_loop)
+                    else:
+                        logger.error(
+                            "Cannot send callback: Main event loop not available")
 
                     # Terminate session in SessionManager (if not already done in finally block)
                     async def terminate_session():
@@ -177,7 +187,12 @@ class TwilioMediaStreamsHandler:
                                 f"Session already terminated or not found: {e}")
 
                     if self.session_manager:
-                        asyncio.create_task(terminate_session())
+                        if self.main_loop and self.main_loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                terminate_session(), self.main_loop)
+                        else:
+                            logger.error(
+                                "Cannot terminate session: Main event loop not available")
 
             if call_status in ['completed', 'failed', 'busy', 'no-answer']:
                 # Cleanup connection
@@ -361,10 +376,13 @@ class TwilioMediaStreamsHandler:
                         if self.pending_reminder and "CALL OBJECTIVE" not in (self.pending_reminder or ""):
                             # This is an outbound reminder call to Máté - use TO number
                             try:
-                                call = self.twilio_client.calls(call_sid).fetch()
-                                to_number = getattr(call, 'to', None) or getattr(call, 'to_formatted', None) or call._properties.get('to', from_number)
+                                call = self.twilio_client.calls(
+                                    call_sid).fetch()
+                                to_number = getattr(call, 'to', None) or getattr(
+                                    call, 'to_formatted', None) or call._properties.get('to', from_number)
                                 auth_phone = to_number
-                                print(f"   📱 Calling: {to_number} (outbound reminder)")
+                                print(
+                                    f"   📱 Calling: {to_number} (outbound reminder)")
                             except Exception as e:
                                 logger.error(f"Error fetching TO number: {e}")
                                 auth_phone = from_number
@@ -796,7 +814,8 @@ class TwilioMediaStreamsHandler:
             Brief summary text
         """
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
 
             # Format transcript
             conversation = "\n".join(
@@ -811,8 +830,14 @@ Conversation:
 
 Brief summary:"""
 
-            model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            response = await model.generate_content_async(prompt)
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=Config.GEMINI_API_KEY
+            )
+            response = await client.aio.models.generate_content(
+                model='gemini-2.0-flash-exp',
+                contents=prompt
+            )
             return response.text.strip()
         except Exception as e:
             logger.error(f"Error generating call summary: {e}")

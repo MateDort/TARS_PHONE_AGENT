@@ -259,7 +259,8 @@ class ReminderAgent(SubAgent):
             days_of_week=days_of_week
         )
 
-        logger.info(f"Created reminder {reminder_id}: {title} at {reminder_time}")
+        logger.info(
+            f"Created reminder {reminder_id}: {title} at {reminder_time}")
 
         # Build response
         recurrence_text = ""
@@ -444,7 +445,8 @@ class ReminderAgent(SubAgent):
             elif period == 'am' and hour == 12:
                 hour = 0
 
-            target_time = target_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            target_time = target_time.replace(
+                hour=hour, minute=minute, second=0, microsecond=0)
 
         # Check for relative days
         if "tomorrow" in time_str:
@@ -493,8 +495,9 @@ class ContactsAgent(SubAgent):
                 "name": str,
                 "relation": str (optional),
                 "phone": str (optional),
+                "email": str (optional),
                 "birthday": str (optional, YYYY-MM-DD format),
-                "notes": str (optional),
+                "notes": str (optional - bio or additional info),
                 "old_name": str (for edit - name to find),
                 "new_name": str (for edit - new name)
             }
@@ -510,8 +513,13 @@ class ContactsAgent(SubAgent):
                     info.append(f"Relation: {contact['relation']}")
                 if contact['phone']:
                     info.append(f"Phone: {contact['phone']}")
+                if contact.get('email'):
+                    info.append(f"Email: {contact['email']}")
                 if contact['birthday']:
-                    info.append(f"Birthday: {self._format_birthday(contact['birthday'])}")
+                    info.append(
+                        f"Birthday: {self._format_birthday(contact['birthday'])}")
+                if contact.get('notes'):
+                    info.append(f"Bio: {contact['notes']}")
                 return "\n".join(info)
             else:
                 return f"{get_text('contact_not_found')}: {name}"
@@ -537,7 +545,8 @@ class ContactsAgent(SubAgent):
                     bday = datetime.fromisoformat(c['birthday']).date()
                     # Check if birthday is today
                     if bday.month == today.month and bday.day == today.day:
-                        upcoming.append(format_text('birthday_today', name=c['name']))
+                        upcoming.append(format_text(
+                            'birthday_today', name=c['name']))
 
             return "\n".join(upcoming) if upcoming else get_text('no_birthdays_today')
 
@@ -558,6 +567,7 @@ class ContactsAgent(SubAgent):
 
         relation = args.get("relation")
         phone = args.get("phone")
+        email = args.get("email")
         birthday = args.get("birthday")
         notes = args.get("notes")
 
@@ -571,6 +581,7 @@ class ContactsAgent(SubAgent):
             name=name,
             relation=relation,
             phone=phone,
+            email=email,
             birthday=birthday,
             notes=notes
         )
@@ -583,6 +594,8 @@ class ContactsAgent(SubAgent):
             info.append(f"Relation: {relation}")
         if phone:
             info.append(f"Phone: {phone}")
+        if email:
+            info.append(f"Email: {email}")
         if birthday:
             info.append(f"Birthday: {self._format_birthday(birthday)}")
 
@@ -610,6 +623,8 @@ class ContactsAgent(SubAgent):
             updates["relation"] = args["relation"]
         if "phone" in args:
             updates["phone"] = args["phone"]
+        if "email" in args:
+            updates["email"] = args["email"]
         if "birthday" in args:
             updates["birthday"] = args["birthday"]
         if "notes" in args:
@@ -625,7 +640,8 @@ class ContactsAgent(SubAgent):
 
         # Return updated contact info
         updated_contact = self.db.get_contacts()
-        updated = next((c for c in updated_contact if c['id'] == contact['id']), None)
+        updated = next(
+            (c for c in updated_contact if c['id'] == contact['id']), None)
 
         if updated:
             info = [f"{get_text('contact_updated')}: {updated['name']}"]
@@ -633,8 +649,11 @@ class ContactsAgent(SubAgent):
                 info.append(f"Relation: {updated['relation']}")
             if updated['phone']:
                 info.append(f"Phone: {updated['phone']}")
+            if updated.get('email'):
+                info.append(f"Email: {updated['email']}")
             if updated['birthday']:
-                info.append(f"Birthday: {self._format_birthday(updated['birthday'])}")
+                info.append(
+                    f"Birthday: {self._format_birthday(updated['birthday'])}")
             return "\n".join(info)
 
         return f"{get_text('contact_updated')}: {old_name}"
@@ -780,7 +799,8 @@ class OutboundCallAgent(SubAgent):
             contact = self.db.search_contact(contact_name)
             if contact and contact.get('phone'):
                 phone_number = contact['phone']
-                logger.info(f"Looked up phone number for {contact_name}: {phone_number}")
+                logger.info(
+                    f"Looked up phone number for {contact_name}: {phone_number}")
             else:
                 return f"I couldn't find a phone number for {contact_name}, sir. Please provide a phone number or save their contact information first."
 
@@ -798,7 +818,8 @@ class OutboundCallAgent(SubAgent):
             alternative_options=alternative_options
         )
 
-        logger.info(f"Created call goal {goal_id} for {contact_name} ({phone_number})")
+        logger.info(
+            f"Created call goal {goal_id} for {contact_name} ({phone_number})")
 
         # Prepare goal message for TARS to use during the call
         goal_message = self._format_goal_message(
@@ -813,13 +834,15 @@ class OutboundCallAgent(SubAgent):
                     to_number=phone_number,
                     reminder_message=goal_message
                 )
-                self.db.update_call_goal(goal_id, call_sid=call_sid, status='in_progress')
+                self.db.update_call_goal(
+                    goal_id, call_sid=call_sid, status='in_progress')
                 logger.info(f"Initiated call for goal {goal_id}: {call_sid}")
 
                 return f"Understood, sir. I'll ring {contact_name} now to {goal_description}. I'll hang up with you and call you back once I've spoken with them. Goodbye for now."
             except Exception as e:
                 logger.error(f"Error making call: {e}")
-                self.db.fail_call_goal(goal_id, f"Failed to initiate call: {str(e)}")
+                self.db.fail_call_goal(
+                    goal_id, f"Failed to initiate call: {str(e)}")
                 return f"Sorry sir, I couldn't initiate the call to {contact_name}. Error: {str(e)}"
         else:
             return f"Call goal saved, sir. Ready to call {contact_name} when you're ready."
@@ -836,7 +859,8 @@ class OutboundCallAgent(SubAgent):
         ]
 
         if preferred_date and preferred_time:
-            message_parts.append(f"Preferred time: {preferred_date} at {preferred_time}")
+            message_parts.append(
+                f"Preferred time: {preferred_date} at {preferred_time}")
         elif preferred_date:
             message_parts.append(f"Preferred date: {preferred_date}")
         elif preferred_time:
@@ -906,7 +930,8 @@ class OutboundCallAgent(SubAgent):
         elif contact_name:
             # Find by contact name
             goals = self.db.get_pending_call_goals()
-            match = next((g for g in goals if contact_name.lower() in g['contact_name'].lower()), None)
+            match = next((g for g in goals if contact_name.lower()
+                         in g['contact_name'].lower()), None)
 
             if match:
                 self.db.fail_call_goal(match['id'], "Cancelled by user")
@@ -968,10 +993,11 @@ class InterSessionAgent(SubAgent):
         if not target or not message:
             return "Please provide target_session_name and message, sir."
 
-        # Get current session (this needs to be injected by the handler)
-        # For now, we'll use None and let router handle it
+        # Get source session (injected by SessionManager wrapper)
+        source_session = args.get('_source_session')
+
         await self.router.route_message(
-            from_session=None,  # Will be set by handler
+            from_session=source_session,
             message=message,
             target=target,
             message_type=message_type,
@@ -992,15 +1018,18 @@ class InterSessionAgent(SubAgent):
         if not question:
             return "Please provide a question, sir."
 
+        source_session = args.get('_source_session')
+
         # Format confirmation request
         formatted_message = f"{question} Options: {options}. Context: {context}"
 
         await self.router.route_message(
-            from_session=None,
+            from_session=source_session,
             message=formatted_message,
             target="user",
             message_type="confirmation_request",
-            context={"question": question, "options": options, "detail": context}
+            context={"question": question,
+                     "options": options, "detail": context}
         )
 
         return "Confirmation request sent to Máté, sir. Awaiting response."
@@ -1017,6 +1046,8 @@ class InterSessionAgent(SubAgent):
         if not message:
             return "Please provide a message to broadcast, sir."
 
+        source_session = args.get('_source_session')
+
         # Check if this group already approved
         approval = self.db.get_broadcast_approval(session_group)
 
@@ -1025,7 +1056,7 @@ class InterSessionAgent(SubAgent):
             question = f"I'd like to share this information with all {session_group} sessions: '{message}'. Should I broadcast this?"
 
             await self.router.route_message(
-                from_session=None,
+                from_session=source_session,
                 message=question,
                 target="user",
                 message_type="broadcast_approval_request",
@@ -1043,7 +1074,7 @@ class InterSessionAgent(SubAgent):
             session_list = [s.strip() for s in target_sessions.split(",")]
 
             await self.router.route_message(
-                from_session=None,
+                from_session=source_session,
                 message=message,
                 target=session_list,
                 message_type="broadcast",
@@ -1069,9 +1100,11 @@ class InterSessionAgent(SubAgent):
 
         # Filter sessions
         if filter_type == "outbound":
-            sessions = [s for s in active_sessions if s.session_type.value == "outbound_goal"]
+            sessions = [
+                s for s in active_sessions if s.session_type.value == "outbound_goal"]
         elif filter_type == "inbound":
-            sessions = [s for s in active_sessions if "inbound" in s.session_type.value]
+            sessions = [
+                s for s in active_sessions if "inbound" in s.session_type.value]
         elif filter_type == "mate_only":
             sessions = [s for s in active_sessions if s.has_full_access()]
         else:  # all
@@ -1083,7 +1116,8 @@ class InterSessionAgent(SubAgent):
         # Format list
         session_list = []
         for s in sessions:
-            session_list.append(f"- {s.session_name} ({s.permission_level.value} access, {s.session_type.value})")
+            session_list.append(
+                f"- {s.session_name} ({s.permission_level.value} access, {s.session_type.value})")
 
         return f"Active sessions ({len(sessions)}):\n" + "\n".join(session_list)
 
@@ -1099,13 +1133,15 @@ class InterSessionAgent(SubAgent):
         if not message:
             return "Please provide a message."
 
+        source_session = args.get('_source_session')
+
         # Format message for Máté
         formatted_msg = f"Message from {caller_name}: {message}"
         if callback_requested:
             formatted_msg += f"\n(Caller requested a callback)"
 
         await self.router.route_message(
-            from_session=None,
+            from_session=source_session,
             message=formatted_msg,
             target="user",
             message_type="notification"
@@ -1133,7 +1169,8 @@ class InterSessionAgent(SubAgent):
                     callback_dt = parser.parse(callback_time, fuzzy=True)
                     # If parsed date is in the past, assume it's for tomorrow
                     if callback_dt < datetime.now():
-                        callback_dt = callback_dt.replace(day=datetime.now().day + 1)
+                        callback_dt = callback_dt.replace(
+                            day=datetime.now().day + 1)
                 except:
                     # If parsing fails, schedule for 1 hour from now
                     callback_dt = datetime.now() + timedelta(hours=1)
@@ -1182,7 +1219,8 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
 
     # Add inter-session agent if session_manager and router are provided
     if session_manager and router:
-        agents["inter_session"] = InterSessionAgent(session_manager, router, db)
+        agents["inter_session"] = InterSessionAgent(
+            session_manager, router, db)
 
     return agents
 
@@ -1256,7 +1294,7 @@ def get_function_declarations() -> list:
         },
         {
             "name": "lookup_contact",
-            "description": "Look up, add, edit, or manage family and friends contact information including phone numbers, birthdays, and relationships. Examples: 'what is Helen's phone number', 'add a new contact', 'edit contact information'",
+            "description": "Look up, add, edit, or manage family and friends contact information including phone numbers, email addresses, birthdays, relationships, and bio. Examples: 'what is Helen's email', 'add a new contact', 'edit contact information', 'add bio for John'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -1276,13 +1314,17 @@ def get_function_declarations() -> list:
                         "type": "STRING",
                         "description": "Phone number. For add/edit actions"
                     },
+                    "email": {
+                        "type": "STRING",
+                        "description": "Email address. For add/edit actions"
+                    },
                     "birthday": {
                         "type": "STRING",
                         "description": "Birthday in YYYY-MM-DD format (e.g., '2004-08-27'). For add/edit actions"
                     },
                     "notes": {
                         "type": "STRING",
-                        "description": "Additional notes about the contact. For add/edit actions"
+                        "description": "Additional notes or bio about the contact (e.g., 'Loves hiking and photography', 'Works as software engineer at Google'). For add/edit actions"
                     },
                     "old_name": {
                         "type": "STRING",
