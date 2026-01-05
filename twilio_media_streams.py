@@ -742,7 +742,8 @@ class TwilioMediaStreamsHandler:
         """
         try:
             call = self.twilio_client.calls(call_sid).fetch()
-            return call.from_  # Caller's phone number
+            # Try different attribute names for the from number
+            return getattr(call, 'from_', None) or getattr(call, 'from_formatted', None) or call._properties.get('from', 'unknown')
         except Exception as e:
             logger.error(f"Error fetching call details: {e}")
             return "unknown"

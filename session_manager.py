@@ -208,14 +208,34 @@ class SessionManager:
         )
 
         # Get system instruction
+        from translations import format_text
+        from datetime import datetime
+
+        current_time = datetime.now().strftime("%I:%M %p")
+        current_date = datetime.now().strftime("%A, %B %d, %Y")
+
         if permission_level == PermissionLevel.FULL:
             # Use standard system instruction from config
-            from personality import get_personality_prompt
-            system_instruction = get_personality_prompt()
+            system_instruction = format_text(
+                'tars_system_instruction',
+                current_time=current_time,
+                current_date=current_date,
+                humor_percentage=Config.HUMOR_PERCENTAGE,
+                honesty_percentage=Config.HONESTY_PERCENTAGE,
+                personality=Config.PERSONALITY,
+                nationality=Config.NATIONALITY
+            )
         else:
             # Add LIMITED access constraints
-            from personality import get_personality_prompt
-            base_instruction = get_personality_prompt()
+            base_instruction = format_text(
+                'tars_system_instruction',
+                current_time=current_time,
+                current_date=current_date,
+                humor_percentage=Config.HUMOR_PERCENTAGE,
+                honesty_percentage=Config.HONESTY_PERCENTAGE,
+                personality=Config.PERSONALITY,
+                nationality=Config.NATIONALITY
+            )
             security_instruction = get_limited_system_instruction()
             system_instruction = base_instruction + "\n\n" + security_instruction
 
