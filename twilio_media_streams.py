@@ -19,13 +19,16 @@ logger = logging.getLogger(__name__)
 class TwilioMediaStreamsHandler:
     """Handles Twilio Media Streams WebSocket connection with Gemini Live."""
 
-    def __init__(self, gemini_client: GeminiLiveClient, reminder_checker=None, database=None):
-        """Initialize handler.
+    def __init__(self, gemini_client: GeminiLiveClient, reminder_checker=None, db=None, messaging_handler=None, session_manager=None, router=None):
+        """Initialize handler with agent hub support.
 
         Args:
-            gemini_client: GeminiLiveClient instance
-            reminder_checker: Optional ReminderChecker instance for call status updates
-            database: Optional Database instance for conversation logging
+            gemini_client: GeminiLiveClient instance (main client, not used per-session)
+            reminder_checker: Optional ReminderChecker instance
+            db: Optional Database instance for conversation logging
+            messaging_handler: Optional MessagingHandler instance
+            session_manager: Optional SessionManager for agent hub
+            router: Optional MessageRouter for inter-session communication
         """
         self.gemini_client = gemini_client
         self.twilio_client = Client(
@@ -33,11 +36,14 @@ class TwilioMediaStreamsHandler:
         self.app = Flask(__name__)
         self._setup_routes()
         self.reminder_checker = reminder_checker
-        self.db = database
+        self.db = db
+        self.messaging_handler = messaging_handler
+        self.session_manager = session_manager
+        self.router = router
 
-        # WebSocket state
+        # WebSocket state (deprecated - sessions now managed by SessionManager)
         self.websocket_server = None
-        self.active_connections = {}
+        self.active_connections = {}  # Kept for backward compatibility
 
         # Pending reminder message for auto-calls
         self.pending_reminder = None
@@ -129,80 +135,48 @@ class TwilioMediaStreamsHandler:
                     self.db.complete_call_goal(
                         goal['id'], result=f"Call completed ({call_duration}s)")
                     logger.info(
-                        f"Goal call {goal['id']} completed, will call Máté back")
+                        f"Goal call {goal['id']} completed, generating summary...")
 
-                    # Schedule callback to Máté with summary including conversation transcript
-                    import threading
+                    # Get parent session ID (Máté's original session that requested this call)
+                    parent_session_id = goal.get('parent_session_id')
 
-                    def call_back_mate():
-                        import time
-                        time.sleep(2)  # Brief delay before calling back
-                        contact_name = goal['contact_name']
-                        goal_desc = goal['goal_description']
-
-                        # Get conversation transcript from this call
-                        conversations = self.db.get_conversations_by_call_sid(
-                            call_sid)
-                        transcript_summary = []
-
-                        if conversations:
-                            # Include ALL messages from the entire conversation
-                            for conv in conversations:
-                                sender = "TARS" if conv['sender'] == 'assistant' else contact_name
-                                transcript_summary.append(
-                                    f"{sender}: {conv['message']}")
-
-                            transcript_text = "\n".join(transcript_summary)
-                            callback_message = f"Report to Máté about the call with {contact_name}:\n\nGOAL: {goal_desc}\nDURATION: {call_duration} seconds\n\nFULL CONVERSATION:\n{transcript_text}\n\nProvide a brief summary of what happened and any important information or next steps."
-                        else:
-                            # Fallback if no transcript available
-                            callback_message = f"Report to Máté: You just completed a call with {contact_name} regarding '{goal_desc}'. The call lasted {call_duration} seconds. Unfortunately, the conversation transcript was not available. Provide a brief update based on what you remember."
-
-                        # Get callback delivery method from config
-                        callback_method = Config.CALLBACK_REPORT.lower()
-
+                    # Generate and route callback via MessageRouter (async, non-blocking)
+                    async def send_callback():
                         try:
-                            # Send via call
-                            if callback_method in ['call', 'both']:
-                                self.make_call(
-                                    to_number=Config.TARGET_PHONE_NUMBER,
-                                    reminder_message=callback_message
-                                )
-                                logger.info(
-                                    f"Called Máté back after goal call completion with transcript")
+                            # Get conversation transcript
+                            transcript = self.db.get_conversations_by_call_sid(
+                                call_sid)
 
-                            # Send via message
-                            if callback_method in ['message', 'both']:
-                                if self.messaging_handler:
-                                    # Create a simple text summary for message
-                                    message_text = f"Call with {contact_name} completed ({call_duration}s).\n\nGOAL: {goal_desc}\n\nTranscript:\n{transcript_text[:500]}..."  # Truncate for SMS
+                            # Generate brief AI summary (2-3 sentences)
+                            summary = await self._generate_call_summary(transcript, goal)
 
-                                    # Use asyncio to run the async send_sms in this sync thread
-                                    loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(loop)
-                                    try:
-                                        loop.run_until_complete(self.messaging_handler.send_sms(
-                                            to_number=Config.TARGET_PHONE_NUMBER,
-                                            message=message_text
-                                        ))
-                                        logger.info(
-                                            f"Sent callback message to Máté after goal call")
-                                    finally:
-                                        loop.close()
+                            callback_message = f"Report from call with {goal['contact_name']}:\n\n{summary}"
+
+                            # Route via message router (smart routing - in-call or SMS/call)
+                            await self.router.route_message(
+                                from_session=None,  # System message
+                                message=callback_message,
+                                target="user",
+                                message_type="call_completion_report"
+                            )
+                            logger.info(
+                                f"Routed callback for goal call {goal['id']}")
                         except Exception as e:
-                            logger.error(f"Error sending callback to Máté: {e}")
+                            logger.error(f"Error sending callback: {e}")
 
-                    threading.Thread(target=call_back_mate,
-                                     daemon=True).start()
+                    # Run in background
+                    asyncio.create_task(send_callback())
 
-            # Track if call was answered for reminder delivery
-            if self.reminder_checker:
-                if call_status == 'in-progress':
-                    # Call was answered
-                    self.reminder_checker.set_call_answered(True)
-                elif call_status in ['failed', 'busy', 'no-answer', 'canceled']:
-                    # Call was not answered
-                    self.reminder_checker.set_call_answered(False)
+                    # Terminate session in SessionManager (if not already done in finally block)
+                    async def terminate_session():
+                        try:
+                            await self.session_manager.terminate_session_by_call_sid(call_sid)
+                        except Exception as e:
+                            logger.debug(
+                                f"Session already terminated or not found: {e}")
+
+                    if self.session_manager:
+                        asyncio.create_task(terminate_session())
 
             if call_status in ['completed', 'failed', 'busy', 'no-answer']:
                 # Cleanup connection
@@ -347,7 +321,7 @@ class TwilioMediaStreamsHandler:
             return Response('', status=200)
 
     async def handle_media_stream(self, websocket):
-        """Handle WebSocket connection from Twilio Media Streams.
+        """Handle WebSocket connection from Twilio Media Streams - now creates session via SessionManager.
 
         Args:
             websocket: WebSocket connection
@@ -355,52 +329,175 @@ class TwilioMediaStreamsHandler:
         # Note: 'path' parameter removed - websockets library no longer passes it in newer versions
         call_sid = None
         stream_sid = None
-
-        # CRITICAL: Create a NEW, INDEPENDENT Gemini Live client for THIS call
-        # This ensures each call has its own conversation context and doesn't interfere with other calls
-        from gemini_live_client import GeminiLiveClient
-        call_gemini_client = GeminiLiveClient(
-            api_key=Config.GEMINI_API_KEY,
-            system_instruction=self.gemini_client.system_instruction  # Use same instructions
-        )
-        # Copy function declarations and handlers from the shared client
-        call_gemini_client.function_declarations = self.gemini_client.function_declarations.copy()
-        call_gemini_client.function_handlers = self.gemini_client.function_handlers.copy()
+        session = None
+        call_gemini_client = None
 
         try:
             print(f"\n🔌 WEBSOCKET CONNECTED")
-            logger.info(
-                "Media stream connected - creating dedicated Gemini session")
+            logger.info("Media stream connected - waiting for start event...")
 
-            # Connect THIS call's Gemini Live client
-            print(f"   Connecting to Gemini Live...")
-            await call_gemini_client.connect()
-            print(f"   ✅ Gemini Live connected (independent session)")
+            # Wait for 'start' event to get call_sid before creating session
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    event = data.get('event')
 
-            # If this is a reminder call, send the reminder message to Gemini
-            if self.pending_reminder:
-                # Check if this is a goal-based call (contains "CALL OBJECTIVE")
-                if "CALL OBJECTIVE" in self.pending_reminder or "=== OUTBOUND CALL" in self.pending_reminder:
-                    # This is an outbound goal call - TARS is speaking to the contact, not Máté
-                    # Send as system context but DON'T end turn - let TARS greet first when they answer
-                    reminder_msg = f"[System: You are now on a call with the person mentioned in this objective. Speak to THEM directly. This is NOT a call with Máté. Start the conversation by greeting them naturally.]\n\n{self.pending_reminder}"
-                    await call_gemini_client.send_text(reminder_msg, end_of_turn=True)
-                else:
-                    # This is a reminder call to Máté - announce it immediately
-                    reminder_msg = f"You need to announce this reminder to the user: {self.pending_reminder}"
-                    await call_gemini_client.send_text(reminder_msg, end_of_turn=True)
-                print(f"   🎯 Goal message sent to TARS")
-                print(f"   {self.pending_reminder[:100]}...")
-                logger.info(
-                    f"Sent reminder to Gemini: {self.pending_reminder}")
-                self.pending_reminder = None  # Clear after sending
-            else:
-                # Regular incoming call - greet Máté
-                from translations import get_text
-                greeting = get_text('greeting')
-                await call_gemini_client.send_text(f"[System: Greet Máté with: '{greeting}']", end_of_turn=True)
-                print(f"   👋 Greeting message sent to TARS")
-                logger.info("Sent greeting trigger to Gemini for regular call")
+                    if event == 'start':
+                        # Extract call details
+                        call_sid = data['start']['callSid']
+                        stream_sid = data['start']['streamSid']
+
+                        print(f"   📞 Call SID: {call_sid}")
+                        logger.info(
+                            f"Stream started: {stream_sid} for call {call_sid}")
+
+                        # Get caller's phone number from Twilio Call API
+                        from_number = await self._get_caller_phone(call_sid)
+                        print(f"   📱 Caller: {from_number}")
+
+                        # CREATE SESSION via SessionManager
+                        # This handles authentication, naming, and permission-filtered function declarations
+                        session = await self.session_manager.create_session(
+                            call_sid=call_sid,
+                            phone_number=from_number,
+                            websocket=websocket,
+                            stream_sid=stream_sid,
+                            purpose=self.pending_reminder if "CALL OBJECTIVE" in (
+                                self.pending_reminder or "") else None
+                        )
+
+                        print(
+                            f"   👤 Session: {session.session_name} ({session.permission_level.value} access)")
+                        logger.info(
+                            f"Created session: {session.session_name} with {session.permission_level.value} permissions")
+
+                        # Use session's dedicated Gemini client (already configured with permissions)
+                        call_gemini_client = session.gemini_client
+
+                        # Connect to Gemini with permission level
+                        print(f"   Connecting to Gemini Live...")
+                        await call_gemini_client.connect(permission_level=session.permission_level.value)
+                        print(
+                            f"   ✅ Gemini Live connected (permission: {session.permission_level.value})")
+
+                        # Send initial context based on session type and permissions
+                        if self.pending_reminder:
+                            # Outbound call with a goal
+                            if "CALL OBJECTIVE" in self.pending_reminder or "=== OUTBOUND CALL" in self.pending_reminder:
+                                # Goal-based call - TARS speaks to contact, not Máté
+                                reminder_msg = f"[System: You are now speaking with {session.session_name}. This is NOT Máté.]\n\n{self.pending_reminder}"
+                                await call_gemini_client.send_text(reminder_msg, end_of_turn=True)
+                                print(f"   🎯 Goal message sent to TARS")
+                                print(f"   {self.pending_reminder[:100]}...")
+                            else:
+                                # Reminder call to Máté
+                                await call_gemini_client.send_text(f"Announce reminder: {self.pending_reminder}", end_of_turn=True)
+                                print(f"   ⏰ Reminder message sent")
+                            self.pending_reminder = None
+
+                        elif session.permission_level.value == "full":
+                            # Máté's session - regular greeting
+                            from translations import get_text
+                            greeting = get_text('greeting')
+                            await call_gemini_client.send_text(f"[System: Greet Máté with: '{greeting}']", end_of_turn=True)
+                            print(f"   👋 Greeting sent to TARS")
+                            logger.info(
+                                "Sent greeting trigger to Gemini for Máté")
+
+                        else:
+                            # Unknown caller - limited access greeting
+                            greeting = f"Hey, this is {Config.TARGET_NAME}'s assistant TARS, how can I help you?"
+                            await call_gemini_client.send_text(
+                                f"[System: Greet caller with: '{greeting}'. You have limited access - can only take messages and schedule callbacks.]",
+                                end_of_turn=True
+                            )
+                            print(f"   🔒 Limited access greeting sent")
+                            logger.info(
+                                f"Sent limited access greeting for unknown caller: {from_number}")
+
+                            # Notify Máté of incoming unknown call (non-blocking)
+                            asyncio.create_task(
+                                self._notify_mate_of_unknown_caller(session))
+
+                        # Mark session as active
+                        session.activate()
+
+                        # Set up conversation logging callbacks with the call_sid
+                        # Buffer for accumulating sentence fragments
+                        user_buffer = []
+                        ai_buffer = []
+
+                        async def log_user_transcript(text: str):
+                            """Log user's spoken text to database, batching into sentences."""
+                            try:
+                                if not text.strip():
+                                    return
+
+                                user_buffer.append(text)
+
+                                # Check if this completes a sentence (ends with punctuation or is long enough)
+                                combined = ''.join(user_buffer)
+                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(user_buffer) > 15:
+                                    if hasattr(self, 'db') and self.db:
+                                        self.db.add_conversation_message(
+                                            sender='user',
+                                            message=combined.strip(),
+                                            medium='phone_call',
+                                            call_sid=call_sid,
+                                            direction='inbound'
+                                        )
+                                        logger.debug(
+                                            f"Logged user sentence for call {call_sid}: {combined[:50]}...")
+                                        user_buffer.clear()
+                            except Exception as e:
+                                logger.error(
+                                    f"Error logging user transcript: {e}")
+
+                        async def log_ai_response(text: str):
+                            """Log AI's spoken response to database, batching into sentences."""
+                            try:
+                                if not text.strip():
+                                    return
+
+                                ai_buffer.append(text)
+
+                                # Check if this completes a sentence (ends with punctuation or is long enough)
+                                combined = ''.join(ai_buffer)
+                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(ai_buffer) > 15:
+                                    if hasattr(self, 'db') and self.db:
+                                        self.db.add_conversation_message(
+                                            sender='assistant',
+                                            message=combined.strip(),
+                                            medium='phone_call',
+                                            call_sid=call_sid,
+                                            direction='outbound'
+                                        )
+                                        logger.debug(
+                                            f"Logged AI sentence for call {call_sid}: {combined[:50]}...")
+                                        ai_buffer.clear()
+                            except Exception as e:
+                                logger.error(f"Error logging AI response: {e}")
+
+                        # Register conversation logging callbacks
+                        call_gemini_client.on_user_transcript = log_user_transcript
+                        call_gemini_client.on_text_response = log_ai_response
+                        logger.info(
+                            f"Registered conversation logging callbacks for call {call_sid}")
+
+                        # Register in active_connections (deprecated but kept for compatibility)
+                        self.active_connections[call_sid] = {
+                            'stream_sid': stream_sid,
+                            'websocket': websocket
+                        }
+
+                        # Break out to process media events
+                        break
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON from Twilio during start: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing start event: {e}")
+                    raise
 
             # Set up audio callback to send Gemini's audio back to Twilio
             async def send_audio_to_twilio(audio_data: bytes):
@@ -438,89 +535,13 @@ class TwilioMediaStreamsHandler:
 
             call_gemini_client.on_audio_response = send_audio_to_twilio
 
-            # We'll set up conversation logging callbacks after we get the call_sid
-            # from Twilio to avoid closure issues with undefined call_sid
-
-            # Process messages from Twilio
+            # Process media messages from Twilio
             async for message in websocket:
                 try:
                     data = json.loads(message)
                     event = data.get('event')
 
-                    if event == 'start':
-                        # Stream started
-                        call_sid = data['start']['callSid']
-                        stream_sid = data['start']['streamSid']
-
-                        # NOW set up conversation logging callbacks with the correct call_sid
-                        # Buffer for accumulating sentence fragments
-                        user_buffer = []
-                        ai_buffer = []
-
-                        async def log_user_transcript(text: str):
-                            """Log user's spoken text to database, batching into sentences."""
-                            try:
-                                if not text.strip():
-                                    return
-
-                                user_buffer.append(text)
-
-                                # Check if this completes a sentence (ends with punctuation or is long enough)
-                                combined = ''.join(user_buffer)
-                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(user_buffer) > 15:
-                                    if hasattr(self, 'db') and self.db:
-                                        self.db.add_conversation_message(
-                                            sender='user',
-                                            message=combined.strip(),
-                                            medium='phone_call',
-                                            call_sid=call_sid,
-                                            direction='inbound'
-                                        )
-                                        logger.debug(f"Logged user sentence for call {call_sid}: {combined[:50]}...")
-                                        user_buffer.clear()
-                            except Exception as e:
-                                logger.error(f"Error logging user transcript: {e}")
-
-                        async def log_ai_response(text: str):
-                            """Log AI's spoken response to database, batching into sentences."""
-                            try:
-                                if not text.strip():
-                                    return
-
-                                ai_buffer.append(text)
-
-                                # Check if this completes a sentence (ends with punctuation or is long enough)
-                                combined = ''.join(ai_buffer)
-                                if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(ai_buffer) > 15:
-                                    if hasattr(self, 'db') and self.db:
-                                        self.db.add_conversation_message(
-                                            sender='assistant',
-                                            message=combined.strip(),
-                                            medium='phone_call',
-                                            call_sid=call_sid,
-                                            direction='outbound'
-                                        )
-                                        logger.debug(f"Logged AI sentence for call {call_sid}: {combined[:50]}...")
-                                        ai_buffer.clear()
-                            except Exception as e:
-                                logger.error(f"Error logging AI response: {e}")
-
-                        # Register conversation logging callbacks
-                        call_gemini_client.on_user_transcript = log_user_transcript
-                        call_gemini_client.on_text_response = log_ai_response
-                        logger.info(f"Registered conversation logging callbacks for call {call_sid}")
-                        self.active_connections[call_sid] = {
-                            'stream_sid': stream_sid,
-                            'websocket': websocket
-                        }
-                        logger.info(
-                            f"Stream started: {stream_sid} for call {call_sid}")
-
-                        # Update call status in reminder checker
-                        if self.reminder_checker:
-                            self.reminder_checker.set_in_call(True)
-
-                    elif event == 'media':
+                    if event == 'media':
                         # Audio from caller
                         payload = data['media']['payload']
 
@@ -590,7 +611,8 @@ class TwilioMediaStreamsHandler:
                                         call_sid=call_sid,
                                         direction='inbound'
                                     )
-                                    logger.debug(f"Flushed remaining user text: {combined[:50]}...")
+                                    logger.debug(
+                                        f"Flushed remaining user text: {combined[:50]}...")
                                     user_buffer.clear()
 
                             if ai_buffer and hasattr(self, 'db') and self.db:
@@ -603,10 +625,12 @@ class TwilioMediaStreamsHandler:
                                         call_sid=call_sid,
                                         direction='outbound'
                                     )
-                                    logger.debug(f"Flushed remaining AI text: {combined[:50]}...")
+                                    logger.debug(
+                                        f"Flushed remaining AI text: {combined[:50]}...")
                                     ai_buffer.clear()
                         except Exception as e:
-                            logger.error(f"Error flushing transcript buffers: {e}")
+                            logger.error(
+                                f"Error flushing transcript buffers: {e}")
 
                         # Update call status in reminder checker
                         if self.reminder_checker:
@@ -624,14 +648,18 @@ class TwilioMediaStreamsHandler:
         except Exception as e:
             logger.error(f"Error in media stream handler: {e}")
         finally:
-            # Cleanup - disconnect THIS call's Gemini client
-            await call_gemini_client.disconnect()
+            # Cleanup - disconnect Gemini client and terminate session
+            if call_gemini_client:
+                await call_gemini_client.disconnect()
+
+            # Terminate session in SessionManager
+            if session:
+                await self.session_manager.terminate_session(session.session_id)
+                logger.info(f"Terminated session: {session.session_name}")
+
+            # Clean up active_connections (deprecated but kept for compatibility)
             if call_sid and call_sid in self.active_connections:
                 del self.active_connections[call_sid]
-
-            # Update call status in reminder checker
-            if self.reminder_checker:
-                self.reminder_checker.set_in_call(False)
 
     async def _reconnect_gemini(self):
         """Handle Gemini reconnection with buffered audio playback."""
@@ -701,6 +729,76 @@ class TwilioMediaStreamsHandler:
 
         # Keep server running
         await asyncio.Future()  # Run forever
+
+    async def _get_caller_phone(self, call_sid: str) -> str:
+        """Fetch caller's phone number from Twilio Call API.
+
+        Args:
+            call_sid: Twilio Call SID
+
+        Returns:
+            Caller's phone number or "unknown" if fetch fails
+        """
+        try:
+            call = self.twilio_client.calls(call_sid).fetch()
+            return call.from_  # Caller's phone number
+        except Exception as e:
+            logger.error(f"Error fetching call details: {e}")
+            return "unknown"
+
+    async def _notify_mate_of_unknown_caller(self, caller_session):
+        """Notify Máté when unknown caller rings.
+
+        Args:
+            caller_session: AgentSession for the unknown caller
+        """
+        notification = f"Incoming call from {caller_session.session_name}"
+
+        try:
+            await self.router.route_message(
+                from_session=caller_session,
+                message=notification,
+                target="user",
+                message_type="notification"
+            )
+            logger.info(
+                f"Notified Máté of unknown caller: {caller_session.session_name}")
+        except Exception as e:
+            logger.error(f"Error notifying Máté of unknown caller: {e}")
+
+    async def _generate_call_summary(self, transcript: list, goal: dict) -> str:
+        """Generate brief AI summary of call outcome (2-3 sentences).
+
+        Args:
+            transcript: List of conversation message dicts
+            goal: Call goal dictionary
+
+        Returns:
+            Brief summary text
+        """
+        try:
+            import google.generativeai as genai
+
+            # Format transcript
+            conversation = "\n".join(
+                [f"{msg['sender']}: {msg['message']}" for msg in transcript])
+
+            prompt = f"""Summarize this phone call in 2-3 sentences. Focus on: (1) was the goal achieved? (2) what was decided? (3) any next steps?
+
+Goal: {goal['goal_description']}
+
+Conversation:
+{conversation}
+
+Brief summary:"""
+
+            model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            response = await model.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Error generating call summary: {e}")
+            # Fallback to simple format if AI summary fails
+            return f"Call completed. Goal was: {goal['goal_description']}"
 
     def make_call(self, to_number: str = None, from_number: str = None, reminder_message: str = None) -> str:
         """Make an outbound call.
