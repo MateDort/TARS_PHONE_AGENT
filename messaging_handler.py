@@ -99,6 +99,9 @@ class MessagingHandler:
             # IMPORTANT: For SMS/WhatsApp, the AI should NOT call send_message function
             # It should just return text. The send_message function is only for sending links.
             system_instruction += "\n\nIMPORTANT: You are responding via text message. Do NOT call the send_message function unless you are sending a link. Just return your response as text."
+            
+            # Add Google Search availability notice
+            system_instruction += "\n\nYou have access to Google Search for real-time information. Use it automatically for queries about current weather, news, stock prices, or any information that requires up-to-date data. Google Search is enabled and will be used automatically when needed."
 
             # Add context if available
             if context:
@@ -180,16 +183,19 @@ class MessagingHandler:
                 permission_level, all_declarations)
 
             # Build tools list
-            tools = []
-            # Enable Google Search Grounding
-            tools.append({"google_search": {}})
-
+            # For generate_content API, tools should be a single object combining all tools
+            # or an array with a single combined object
+            tools = None
             if declarations:
-                tools.append({
-                    "function_declarations": declarations
-                })
-            if not tools:
-                tools = None
+                # Combine google_search and function_declarations into single tool object
+                tool_obj = {}
+                # Enable Google Search Grounding
+                tool_obj["google_search"] = {}
+                tool_obj["function_declarations"] = declarations
+                tools = [tool_obj]
+            elif True:  # Always enable google_search even without functions
+                # Just google_search
+                tools = [{"google_search": {}}]
 
             # Build conversation history for the API call
             conversation_history = [
