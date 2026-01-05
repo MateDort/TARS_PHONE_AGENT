@@ -80,14 +80,15 @@ class TwilioMediaStreamsHandler:
                 connect = Connect()
                 if Config.WEBSOCKET_URL:
                     # Use configured WebSocket URL (from separate ngrok tunnel)
+                    # Don't add path - WebSocket server listens on root
                     websocket_url = Config.WEBSOCKET_URL.replace(
                         "wss://", "").replace("https://", "").replace("http://", "")
-                    stream = Stream(url=f'wss://{websocket_url}/media-stream')
+                    stream = Stream(url=f'wss://{websocket_url}')
                 else:
                     # Fallback: assume same domain (won't work with separate tunnels)
                     websocket_base = Config.WEBHOOK_BASE_URL.replace(
                         "https://", "").replace("http://", "")
-                    stream = Stream(url=f'wss://{websocket_base}/media-stream')
+                    stream = Stream(url=f'wss://{websocket_base}')
                 connect.append(stream)
                 response.append(connect)
 
