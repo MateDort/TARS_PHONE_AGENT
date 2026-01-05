@@ -369,6 +369,10 @@ class SessionManager:
             # Update database
             self.db.complete_session(session_id, completed_at=datetime.now())
 
+            # Send conversation summary to Máté if this was a limited-access session
+            if session.permission_level == PermissionLevel.LIMITED and self.router:
+                asyncio.create_task(self._send_conversation_summary(session))
+
             # Unregister from router
             if self.router:
                 await self.router.unregister_session(session)
@@ -433,6 +437,49 @@ class SessionManager:
             logger.error(
                 f"Error sending message to session {session.session_id[:8]}: {e}"
             )
+
+    async def _send_conversation_summary(self, session: AgentSession):
+        """Send conversation summary to Máté after a limited-access session ends.
+
+        Args:
+            session: The completed session to summarize
+        """
+        try:
+            # Get conversation from this call
+            conversations = self.db.get_conversations_by_call_sid(session.call_sid)
+
+            if not conversations or len(conversations) == 0:
+                logger.debug(f"No conversation to summarize for {session.session_name}")
+                return
+
+            # Build summary from conversation
+            caller_messages = []
+            for conv in conversations:
+                if conv['sender'] == 'user':  # Messages from the caller
+                    caller_messages.append(conv['message'])
+
+            if not caller_messages:
+                logger.debug(f"No caller messages to summarize for {session.session_name}")
+                return
+
+            # Create concise summary
+            summary_text = "; ".join(caller_messages[:3])  # First 3 messages
+            if len(caller_messages) > 3:
+                summary_text += f" (and {len(caller_messages) - 3} more messages)"
+
+            message = f"Call ended with {session.session_name}. They said: {summary_text}"
+
+            # Route to Máté via message router
+            await self.router.route_message(
+                from_session=session,
+                message=message,
+                target="user",
+                message_type="conversation_summary"
+            )
+            logger.info(f"Sent conversation summary for {session.session_name} to Máté")
+
+        except Exception as e:
+            logger.error(f"Error sending conversation summary: {e}")
 
     def get_session_stats(self) -> Dict:
         """Get statistics about current sessions.
