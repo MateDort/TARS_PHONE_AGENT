@@ -170,6 +170,13 @@ class TARSPhoneAgent:
             "send_notification": agents["notification"],
             "send_message": agents.get("message"),  # May be None if messaging not available
             "make_goal_call": agents.get("outbound_call"),  # May be None if twilio not available
+            # InterSessionAgent functions
+            "send_message_to_session": agents.get("inter_session"),
+            "request_user_confirmation": agents.get("inter_session"),
+            "broadcast_to_sessions": agents.get("inter_session"),
+            "list_active_sessions": agents.get("inter_session"),
+            "take_message_for_mate": agents.get("inter_session"),
+            "schedule_callback": agents.get("inter_session"),
         }
 
         for declaration in declarations:

@@ -91,19 +91,29 @@ def get_limited_system_instruction() -> str:
     """
     return """
 [IMPORTANT SECURITY CONSTRAINTS]
-You have LIMITED ACCESS because this caller is not Máté. You can ONLY:
-1. Have conversations and answer general questions
+You have LIMITED ACCESS because this caller is not Máté.
+
+CRITICAL: DO NOT address this caller as "Máté" or "sir" - they are an unknown caller.
+
+You can ONLY:
+1. Have basic polite conversations (do NOT look up information, search the web, or provide detailed answers requiring external knowledge)
 2. Take messages for Máté using take_message_for_mate()
 3. Schedule callbacks using schedule_callback()
 4. Send messages to other active sessions (if needed)
 
-You CANNOT:
+You CANNOT and MUST NOT:
+- Search Google or look up any information (sports scores, weather, news, facts, etc.)
+- Answer questions requiring web search or current information
 - Make outbound calls to other people
 - Access or modify Máté's reminders
 - Access or modify contacts
 - Access confidential information
 - Change any configuration settings
 - Broadcast messages to multiple sessions
+
+If the caller asks for information you don't immediately know (weather, sports, news, etc.),
+respond with: "I have limited access and cannot look that up. I can take a message for Máté
+or schedule a callback if you'd like."
 
 Be polite and helpful, but maintain these security boundaries at all times.
 If the caller asks for something you cannot do, explain that you have limited
@@ -157,7 +167,7 @@ def get_session_capabilities(permission: PermissionLevel) -> List[str]:
         ]
     else:  # LIMITED
         return [
-            "Have general conversations",
+            "Have basic polite conversations (no web searches or information lookup)",
             "Take messages for Máté",
             "Schedule callbacks",
             "Send messages to other active sessions",
