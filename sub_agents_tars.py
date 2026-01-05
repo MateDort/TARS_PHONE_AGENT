@@ -1233,6 +1233,92 @@ class InterSessionAgent(SubAgent):
         else:
             return f"I was unable to terminate the call with '{target_session.session_name}' due to an error."
 
+
+class MessagingAgent(SubAgent):
+    """Handles messaging operations and platform transitions."""
+
+    def __init__(self, messaging_handler=None, session_manager=None, twilio_handler=None):
+        super().__init__(
+            name="messaging",
+            description="Send messages, links, and suggest platform transitions"
+        )
+        self.messaging_handler = messaging_handler
+        self.session_manager = session_manager
+        self.twilio_handler = twilio_handler
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute messaging operation.
+
+        Args:
+            args: {
+                "action": "send_link|suggest_call|send_snapshot",
+                ... (action-specific parameters)
+            }
+        """
+        action = args.get("action", "send_link")
+
+        if action == "send_link":
+            return await self._send_link(args)
+        elif action == "suggest_call":
+            return await self._suggest_call(args)
+        else:
+            return f"Unknown messaging action: {action}"
+
+    async def _send_link(self, args: Dict[str, Any]) -> str:
+        """Send link to user (during call or via message)."""
+        url = args.get("url")
+        description = args.get("description", "")
+
+        if not url:
+            return "Please provide a URL, sir."
+
+        # Check if Máté is in active call
+        if self.session_manager:
+            mate_main = await self.session_manager.get_mate_main_session()
+
+            if mate_main and mate_main.is_active():
+                # Send link via Gmail while on call
+                if hasattr(self.session_manager, 'gmail_handler') and self.session_manager.gmail_handler:
+                    await self.session_manager.gmail_handler.send_link_during_call(
+                        mate_main.session_id,
+                        url,
+                        description
+                    )
+                    return f"Link sent to your Gmail, sir: {url}"
+
+        # Not on call, send via message
+        if self.messaging_handler:
+            self.messaging_handler.send_message(
+                to_number=Config.TARGET_EMAIL,
+                message_body=f"{description}\n\n{url}" if description else url,
+                medium='gmail'
+            )
+            return f"Link sent via email, sir."
+
+        return "Unable to send link at the moment."
+
+    async def _suggest_call(self, args: Dict[str, Any]) -> str:
+        """Suggest transitioning to a call."""
+        reason = args.get("reason", "This would be easier to discuss on a call")
+
+        # Send suggestion via Gmail
+        if self.messaging_handler:
+            suggestion_text = f"""{reason}.
+
+Would you like me to call you now? Reply 'yes' or 'call me' to start a call.
+            """
+
+            self.messaging_handler.send_message(
+                to_number=Config.TARGET_EMAIL,
+                message_body=suggestion_text,
+                medium='gmail'
+            )
+
+            return "Suggested call transition to Máté via email."
+
+        return "Unable to suggest call."
+
+
 # Agent registry
 
 
@@ -1266,6 +1352,11 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     if session_manager and router:
         agents["inter_session"] = InterSessionAgent(
             session_manager, router, db, twilio_handler)
+
+    # Add messaging agent for links and transitions
+    if messaging_handler and session_manager:
+        agents["messaging"] = MessagingAgent(
+            messaging_handler, session_manager, twilio_handler)
 
     return agents
 
@@ -1651,6 +1742,46 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action", "target_session_name"]
+            }
+        },
+        {
+            "name": "send_link_to_user",
+            "description": "Send a URL link to Máté. If he's on a call, sends to Gmail. Otherwise sends via message. Use when you want to share a website, article, or resource.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'send_link'"
+                    },
+                    "url": {
+                        "type": "STRING",
+                        "description": "The URL to send"
+                    },
+                    "description": {
+                        "type": "STRING",
+                        "description": "Optional description of the link"
+                    }
+                },
+                "required": ["action", "url"]
+            }
+        },
+        {
+            "name": "suggest_phone_call",
+            "description": "Suggest to Máté that a call would be better for discussing the topic. Use when conversation via message is getting complex or would benefit from voice discussion.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'suggest_call'"
+                    },
+                    "reason": {
+                        "type": "STRING",
+                        "description": "Why a call would be better (e.g., 'This topic has many details that would be easier to discuss verbally')"
+                    }
+                },
+                "required": ["action", "reason"]
             }
         }
     ]

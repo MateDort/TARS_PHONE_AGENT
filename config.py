@@ -17,6 +17,8 @@ class Config:
     WHATSAPP_ADMIN_NUMBER = os.getenv('WHATSAPP_ADMIN_NUMBER', '+36202351624')
     # For unknown caller greeting
     TARGET_NAME = os.getenv('TARGET_NAME', 'Máté Dort')
+    # Your personal email for authentication
+    TARGET_EMAIL = os.getenv('TARGET_EMAIL', '').strip()
 
     # Webhook Configuration
     WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL', 'http://localhost:5002')
@@ -47,6 +49,14 @@ class Config:
     ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
     # Format: whatsapp:+1234567890
     WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', 'whatsapp:+14155238886')
+
+    # Gmail Configuration (for console interface)
+    GMAIL_USER = os.getenv('GMAIL_USER', '')
+    GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '')
+
+    # Messaging Platform Selection
+    # Options: gmail, sms, whatsapp
+    MESSAGING_PLATFORM = os.getenv('MESSAGING_PLATFORM', 'gmail')
 
     # TARS Personality Configuration (Dynamically Editable)
     HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))  # Default 70%

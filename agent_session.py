@@ -12,6 +12,7 @@ class SessionStatus(Enum):
     """Session lifecycle states"""
     CONNECTING = "connecting"
     ACTIVE = "active"
+    SUSPENDED = "suspended"  # NEW: Session paused, can resume
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -87,6 +88,11 @@ class AgentSession:
         # Session state
         self.status = SessionStatus.CONNECTING
         self.completed_at: Optional[datetime] = None
+
+        # NEW: Session persistence fields
+        self.platform = "call"  # call, gmail, sms, whatsapp
+        self.last_activity_at = datetime.now()
+        self.can_resume = False
 
         # Inter-agent communication
         self.pending_user_confirmations: List[Dict] = []
@@ -164,6 +170,33 @@ class AgentSession:
     def is_mate_session(self) -> bool:
         """Check if this is a Máté session (full access)"""
         return self.has_full_access()
+
+    def suspend(self):
+        """Suspend session for later resumption"""
+        self.status = SessionStatus.SUSPENDED
+        self.last_activity_at = datetime.now()
+        self.can_resume = True
+        logger.info(f"Session {self.session_id[:8]} suspended")
+
+    def resume(self, new_call_sid: str, new_websocket, new_stream_sid: str):
+        """Resume suspended session with new connection"""
+        self.call_sid = new_call_sid
+        self.websocket = new_websocket
+        self.stream_sid = new_stream_sid
+        self.status = SessionStatus.ACTIVE
+        self.last_activity_at = datetime.now()
+        logger.info(f"Session {self.session_id[:8]} resumed")
+
+    def update_activity(self):
+        """Update last activity timestamp"""
+        self.last_activity_at = datetime.now()
+
+    def switch_platform(self, new_platform: str):
+        """Transfer session to different platform"""
+        old_platform = self.platform
+        self.platform = new_platform
+        self.last_activity_at = datetime.now()
+        logger.info(f"Session {self.session_id[:8]} switched: {old_platform} → {new_platform}")
 
     def to_dict(self) -> Dict:
         """Convert session to dictionary for database storage"""

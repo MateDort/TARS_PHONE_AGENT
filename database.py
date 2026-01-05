@@ -175,6 +175,56 @@ class Database:
                 )
             """)
 
+            # Create session_snapshots table (for session persistence)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    snapshot_type TEXT NOT NULL,
+                    conversation_history TEXT NOT NULL,
+                    system_instruction TEXT,
+                    gemini_state TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+                )
+            """)
+
+            # Create pending_approvals table (for interactive approvals)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS pending_approvals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    approval_id TEXT NOT NULL UNIQUE,
+                    session_id TEXT,
+                    question TEXT NOT NULL,
+                    context TEXT,
+                    options TEXT,
+                    status TEXT DEFAULT 'pending',
+                    response TEXT,
+                    timeout_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+                )
+            """)
+
+            # Create console_messages table (for unified Gmail thread)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS console_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL UNIQUE,
+                    session_id TEXT,
+                    direction TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
+                    subject TEXT,
+                    body TEXT NOT NULL,
+                    email_message_id TEXT,
+                    thread_id TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+                )
+            """)
+
             self.conn.commit()
 
             # Run migrations
@@ -198,6 +248,31 @@ class Database:
                 self.conn.execute("ALTER TABLE contacts ADD COLUMN email TEXT")
                 self.conn.commit()
                 logger.info("Email column added successfully")
+
+            # Extend agent_sessions table for session persistence
+            cursor = self.conn.execute("PRAGMA table_info(agent_sessions)")
+            session_columns = [row[1] for row in cursor.fetchall()]
+
+            if 'session_state' not in session_columns:
+                logger.info("Adding session persistence columns to agent_sessions")
+                self.conn.execute("ALTER TABLE agent_sessions ADD COLUMN session_state TEXT DEFAULT 'active'")
+                self.conn.execute("ALTER TABLE agent_sessions ADD COLUMN platform TEXT DEFAULT 'call'")
+                self.conn.execute("ALTER TABLE agent_sessions ADD COLUMN last_activity_at TEXT")
+                self.conn.execute("ALTER TABLE agent_sessions ADD COLUMN can_resume INTEGER DEFAULT 0")
+                self.conn.commit()
+                logger.info("Session persistence columns added successfully")
+
+            # Extend conversations table to link to sessions
+            cursor = self.conn.execute("PRAGMA table_info(conversations)")
+            conv_columns = [row[1] for row in cursor.fetchall()]
+
+            if 'session_id' not in conv_columns:
+                logger.info("Adding session_id column to conversations table")
+                self.conn.execute("ALTER TABLE conversations ADD COLUMN session_id TEXT")
+                self.conn.execute("ALTER TABLE conversations ADD COLUMN context_snapshot_id INTEGER")
+                self.conn.commit()
+                logger.info("Session link columns added to conversations")
+
         except Exception as e:
             logger.warning(f"Migration error (non-critical): {e}")
 
@@ -921,6 +996,285 @@ class Database:
                SET approved = ?
                WHERE session_group = ?""",
             (approved, session_group)
+        )
+        self.conn.commit()
+
+    # ==================== SESSION SNAPSHOTS ====================
+
+    def save_session_snapshot(self, session_id: str, conversation_history: str, snapshot_type: str = 'full') -> int:
+        """Save session conversation snapshot for persistence.
+
+        Args:
+            session_id: Session UUID
+            conversation_history: JSON string of conversation messages
+            snapshot_type: Type of snapshot ('full', 'summary', 'recent')
+
+        Returns:
+            Snapshot row ID
+        """
+        import json
+        history = json.loads(conversation_history) if isinstance(conversation_history, str) else conversation_history
+        message_count = len(history)
+        now = datetime.now().isoformat()
+
+        cursor = self.conn.execute(
+            """INSERT INTO session_snapshots
+               (session_id, snapshot_type, conversation_history, message_count, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (session_id, snapshot_type, conversation_history, message_count, now)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_latest_session_snapshot(self, session_id: str) -> Optional[Dict]:
+        """Get most recent snapshot for a session.
+
+        Args:
+            session_id: Session UUID
+
+        Returns:
+            Snapshot dictionary or None
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM session_snapshots WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_session_conversation_history(self, session_id: str, limit: Optional[int] = None) -> List[Dict]:
+        """Get conversation history for a session.
+
+        Args:
+            session_id: Session UUID
+            limit: Optional limit on number of messages
+
+        Returns:
+            List of message dictionaries
+        """
+        query = "SELECT * FROM conversations WHERE session_id = ? ORDER BY timestamp"
+        if limit:
+            query += f" LIMIT {limit}"
+
+        cursor = self.conn.execute(query, (session_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== SESSION STATE MANAGEMENT ====================
+
+    def suspend_session(self, session_id: str):
+        """Mark session as suspended (paused for later resumption).
+
+        Args:
+            session_id: Session UUID
+        """
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            """UPDATE agent_sessions
+               SET status = 'suspended', session_state = 'suspended', last_activity_at = ?
+               WHERE session_id = ?""",
+            (now, session_id)
+        )
+        self.conn.commit()
+
+    def mark_session_resumable(self, session_id: str, resumable: bool = True):
+        """Mark session as resumable or not.
+
+        Args:
+            session_id: Session UUID
+            resumable: True if session can be resumed
+        """
+        self.conn.execute(
+            """UPDATE agent_sessions
+               SET can_resume = ?
+               WHERE session_id = ?""",
+            (1 if resumable else 0, session_id)
+        )
+        self.conn.commit()
+
+    def get_resumable_sessions(self, phone_number: str) -> List[Dict]:
+        """Get all resumable sessions for a phone number.
+
+        Args:
+            phone_number: Phone number to query
+
+        Returns:
+            List of resumable session dictionaries (most recent first)
+        """
+        cursor = self.conn.execute(
+            """SELECT * FROM agent_sessions
+               WHERE phone_number = ? AND can_resume = 1 AND status = 'suspended'
+               ORDER BY last_activity_at DESC""",
+            (phone_number,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_session_activity(self, session_id: str):
+        """Update last activity timestamp for a session.
+
+        Args:
+            session_id: Session UUID
+        """
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            """UPDATE agent_sessions
+               SET last_activity_at = ?
+               WHERE session_id = ?""",
+            (now, session_id)
+        )
+        self.conn.commit()
+
+    # ==================== PENDING APPROVALS ====================
+
+    def add_pending_approval(self, approval_id: str, session_id: Optional[str], question: str,
+                           options: str, timeout_minutes: int = 5) -> int:
+        """Add a pending approval request.
+
+        Args:
+            approval_id: Unique approval UUID
+            session_id: Optional associated session UUID
+            question: Question text
+            options: JSON string of options
+            timeout_minutes: Minutes until timeout
+
+        Returns:
+            Approval row ID
+        """
+        from datetime import timedelta
+        now = datetime.now()
+        timeout_at = (now + timedelta(minutes=timeout_minutes)).isoformat()
+        created_at = now.isoformat()
+
+        cursor = self.conn.execute(
+            """INSERT INTO pending_approvals
+               (approval_id, session_id, question, options, status, timeout_at, created_at)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+            (approval_id, session_id, question, options, timeout_at, created_at)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_pending_approval(self, approval_id: str) -> Optional[Dict]:
+        """Get pending approval by ID.
+
+        Args:
+            approval_id: Approval UUID
+
+        Returns:
+            Approval dictionary or None
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM pending_approvals WHERE approval_id = ?",
+            (approval_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def resolve_approval(self, approval_id: str, response: str):
+        """Resolve a pending approval.
+
+        Args:
+            approval_id: Approval UUID
+            response: User's response ('approved', 'denied', etc.)
+        """
+        now = datetime.now().isoformat()
+        status = 'approved' if 'approv' in response.lower() or 'yes' in response.lower() else 'denied'
+
+        self.conn.execute(
+            """UPDATE pending_approvals
+               SET status = ?, response = ?, resolved_at = ?
+               WHERE approval_id = ?""",
+            (status, response, now, approval_id)
+        )
+        self.conn.commit()
+
+    def expire_timeouts(self):
+        """Mark timed-out approvals as expired."""
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            """UPDATE pending_approvals
+               SET status = 'timeout'
+               WHERE status = 'pending' AND timeout_at < ?""",
+            (now,)
+        )
+        self.conn.commit()
+
+    def get_pending_approvals_for_user(self, phone_number: str) -> List[Dict]:
+        """Get all pending approvals for a user.
+
+        Args:
+            phone_number: User's phone number
+
+        Returns:
+            List of pending approval dictionaries
+        """
+        # Join with agent_sessions to get approvals for user's sessions
+        cursor = self.conn.execute(
+            """SELECT pa.* FROM pending_approvals pa
+               LEFT JOIN agent_sessions s ON pa.session_id = s.session_id
+               WHERE pa.status = 'pending'
+               AND (s.phone_number = ? OR pa.session_id IS NULL)
+               ORDER BY pa.created_at""",
+            (phone_number,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== CONSOLE MESSAGES ====================
+
+    def add_console_message(self, session_id: Optional[str], direction: str, message_type: str,
+                          subject: str, body: str, thread_id: Optional[str] = None) -> int:
+        """Add a console message to unified thread.
+
+        Args:
+            session_id: Optional associated session UUID
+            direction: 'inbound' or 'outbound'
+            message_type: Message type ('command', 'summary', 'approval', etc.)
+            subject: Message subject
+            body: Message body
+            thread_id: Optional Gmail thread ID
+
+        Returns:
+            Message row ID
+        """
+        import uuid
+        message_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+
+        cursor = self.conn.execute(
+            """INSERT INTO console_messages
+               (message_id, session_id, direction, message_type, subject, body, thread_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (message_id, session_id, direction, message_type, subject, body, thread_id, now)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_console_thread(self, limit: int = 50) -> List[Dict]:
+        """Get console message thread.
+
+        Args:
+            limit: Maximum number of messages to return
+
+        Returns:
+            List of message dictionaries (most recent first)
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM console_messages ORDER BY created_at DESC LIMIT ?",
+            (limit,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def link_message_to_session(self, message_id: str, session_id: str):
+        """Link a console message to a session.
+
+        Args:
+            message_id: Message UUID
+            session_id: Session UUID
+        """
+        self.conn.execute(
+            """UPDATE console_messages
+               SET session_id = ?
+               WHERE message_id = ?""",
+            (session_id, message_id)
         )
         self.conn.commit()
 

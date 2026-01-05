@@ -95,11 +95,24 @@ class SessionManager:
             Created AgentSession instance
         """
         async with self._lock:
-            # Generate unique session ID
-            session_id = generate_session_id()
-
             # Authenticate phone number
             permission_level = authenticate_phone_number(phone_number)
+
+            # If this is Máté with FULL access, check for resumable session
+            if permission_level == PermissionLevel.FULL:
+                resumed_session = await self.resume_mate_main_session(
+                    phone_number, call_sid, websocket, stream_sid
+                )
+
+                if resumed_session:
+                    logger.info(f"Resumed existing Máté main session")
+                    # Register with router
+                    if self.router:
+                        await self.router.register_session(resumed_session)
+                    return resumed_session
+
+            # Generate unique session ID for new session
+            session_id = generate_session_id()
 
             # Determine session name and type
             session_name, session_type = await self._determine_session_identity(
@@ -425,6 +438,10 @@ class SessionManager:
             # Update database
             self.db.complete_session(session_id, completed_at=datetime.now())
 
+            # Generate and send call summary for Máté (main) sessions
+            if session.is_mate_session() and session.session_name == "Call with Máté (main)":
+                asyncio.create_task(self._generate_and_send_call_summary(session))
+
             # Send conversation summary to Máté if this was a limited-access session
             if session.permission_level == PermissionLevel.LIMITED and self.router:
                 asyncio.create_task(self._send_conversation_summary(session))
@@ -561,3 +578,214 @@ class SessionManager:
             'failed': len(failed),
             'active_sessions': [s.session_name for s in active]
         }
+
+    # ==================== SESSION PERSISTENCE ====================
+
+    async def suspend_mate_main_session(self, reason: str = "user_disconnect") -> bool:
+        """Suspend Máté's main session for later resumption.
+
+        Args:
+            reason: Reason for suspension
+
+        Returns:
+            True if session was suspended, False otherwise
+        """
+        mate_main = await self.get_mate_main_session()
+        if not mate_main:
+            return False
+
+        import json
+
+        # Save conversation snapshot
+        conversations = self.db.get_conversations_by_call_sid(mate_main.call_sid)
+        conversation_history = [
+            {"sender": c['sender'], "message": c['message'], "timestamp": c['timestamp']}
+            for c in conversations
+        ]
+
+        self.db.save_session_snapshot(
+            mate_main.session_id,
+            json.dumps(conversation_history),
+            snapshot_type='full'
+        )
+
+        # Suspend session
+        mate_main.suspend()
+        self.db.suspend_session(mate_main.session_id)
+        self.db.mark_session_resumable(mate_main.session_id, True)
+
+        logger.info(f"Suspended Máté main session {mate_main.session_id[:8]} - {len(conversation_history)} messages saved")
+        return True
+
+    async def resume_mate_main_session(self, phone_number: str, call_sid: str, websocket, stream_sid: str):
+        """Resume Máté's suspended session with conversation history.
+
+        Args:
+            phone_number: Phone number (for verification)
+            call_sid: New Twilio call SID
+            websocket: New WebSocket connection
+            stream_sid: New Twilio stream SID
+
+        Returns:
+            Resumed AgentSession or None if no session to resume
+        """
+        # Check for resumable session
+        resumable_sessions = self.db.get_resumable_sessions(phone_number)
+
+        if not resumable_sessions:
+            return None  # No session to resume, create new
+
+        # Get most recent suspended session
+        session_data = resumable_sessions[0]
+        session_id = session_data['session_id']
+
+        # Retrieve session object (might be in memory or need reconstruction)
+        session = await self.get_session(session_id)
+
+        if not session:
+            # Reconstruct session from database
+            session = await self._reconstruct_session_from_db(session_data)
+            self.sessions[session_id] = session
+
+        # Resume with new connection details
+        session.resume(call_sid, websocket, stream_sid)
+        self.call_sid_to_session[call_sid] = session_id
+
+        # Restore conversation history to Gemini
+        await self._restore_conversation_history(session)
+
+        logger.info(f"Resumed Máté main session {session_id[:8]}")
+        return session
+
+    async def _restore_conversation_history(self, session: AgentSession):
+        """Inject conversation history into Gemini Live session.
+
+        Args:
+            session: Session to restore context to
+        """
+        import json
+
+        # Get snapshot
+        snapshot = self.db.get_latest_session_snapshot(session.session_id)
+        if not snapshot:
+            logger.warning(f"No snapshot found for session {session.session_id[:8]}")
+            return
+
+        conversation_history = json.loads(snapshot['conversation_history'])
+
+        # Send conversation replay to Gemini
+        # Format: "Previous conversation context: [messages]"
+        context_text = "Resuming previous conversation. Here's what we discussed:\n\n"
+
+        for msg in conversation_history[-20:]:  # Last 20 messages for context
+            sender_label = "You" if msg['sender'] == 'assistant' else "Máté"
+            context_text += f"{sender_label}: {msg['message']}\n"
+
+        context_text += "\nLet's continue from where we left off."
+
+        # Send to Gemini as system message
+        await session.gemini_client.send_text(context_text, end_of_turn=True)
+
+        logger.info(f"Restored {len(conversation_history)} messages to session {session.session_id[:8]}")
+
+    async def _reconstruct_session_from_db(self, session_data: Dict) -> AgentSession:
+        """Recreate AgentSession from database data.
+
+        Args:
+            session_data: Session data from database
+
+        Returns:
+            Reconstructed AgentSession
+        """
+        # This is for when session object was lost from memory
+        # Create new GeminiLiveClient
+        permission_level = PermissionLevel(session_data['permission_level'])
+        gemini_client = await self._create_gemini_client(permission_level)
+
+        # Create session object (websocket/stream_sid will be None, updated on resume)
+        session = AgentSession(
+            session_id=session_data['session_id'],
+            call_sid=session_data['call_sid'],
+            session_name=session_data['session_name'],
+            phone_number=session_data['phone_number'],
+            permission_level=permission_level,
+            session_type=SessionType(session_data['session_type']),
+            gemini_client=gemini_client,
+            websocket=None,  # Will be set on resume
+            stream_sid=None,  # Will be set on resume
+            purpose=session_data.get('purpose'),
+            parent_session_id=session_data.get('parent_session_id'),
+            created_at=datetime.fromisoformat(session_data['created_at'])
+        )
+
+        session.status = SessionStatus(session_data['status'])
+        return session
+
+    async def _generate_and_send_call_summary(self, session: AgentSession):
+        """Generate AI-powered call summary and send to Gmail."""
+        try:
+            # Get conversation from call
+            conversations = self.db.get_conversations_by_call_sid(session.call_sid)
+
+            if not conversations or len(conversations) == 0:
+                logger.debug(f"No conversation to summarize for {session.session_name}")
+                return
+
+            # Build conversation text for summarization
+            conversation_text = ""
+            for conv in conversations:
+                sender_label = "TARS" if conv['sender'] == 'assistant' else "Máté"
+                conversation_text += f"{sender_label}: {conv['message']}\n"
+
+            # Use Gemini to generate summary
+            summary = await self._generate_summary_with_ai(conversation_text, session)
+
+            # Send to Gmail console
+            if hasattr(self, 'gmail_handler') and self.gmail_handler:
+                await self.gmail_handler.send_call_summary(session, summary)
+                logger.info(f"Sent call summary for {session.session_name}")
+
+        except Exception as e:
+            logger.error(f"Error generating call summary: {e}")
+
+    async def _generate_summary_with_ai(self, conversation_text: str, session: AgentSession) -> str:
+        """Use Gemini to generate concise call summary."""
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(
+            http_options={"api_version": "v1beta"},
+            api_key=Config.GEMINI_API_KEY
+        )
+
+        prompt = f"""Analyze this phone call between Máté and TARS and create a concise summary.
+
+Conversation:
+{conversation_text}
+
+Generate a summary with:
+1. Main topics discussed (bullet points)
+2. Decisions made
+3. Action items or next steps
+4. Key information shared
+
+Keep it brief and actionable (3-5 sentences max)."""
+
+        try:
+            response = await client.aio.models.generate_content(
+                model="models/gemini-2.0-flash-exp",
+                contents=[types.Content(parts=[types.Part(text=prompt)], role="user")],
+                config=types.GenerateContentConfig(temperature=0.3)
+            )
+
+            if response.candidates and response.candidates[0].content.parts:
+                summary = response.candidates[0].content.parts[0].text
+                return summary.strip()
+            else:
+                return "Summary generation failed."
+
+        except Exception as e:
+            logger.error(f"AI summary generation error: {e}")
+            return "Summary not available."
+        finally:
+            client.close()

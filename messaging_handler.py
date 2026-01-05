@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class MessagingHandler:
     """Handles bidirectional SMS and WhatsApp messaging via Twilio."""
 
-    def __init__(self, database: Database, twilio_client: Client, session_manager=None, router=None, twilio_handler=None):
+    def __init__(self, database: Database, twilio_client: Client, session_manager=None, router=None, twilio_handler=None, gmail_handler=None):
         """Initialize messaging handler.
 
         Args:
@@ -24,12 +24,14 @@ class MessagingHandler:
             session_manager: SessionManager instance
             router: MessageRouter instance
             twilio_handler: TwilioMediaStreamsHandler instance
+            gmail_handler: GmailHandler instance
         """
         self.db = database
         self.twilio_client = twilio_client
         self.session_manager = session_manager
         self.router = router
         self.twilio_handler = twilio_handler
+        self.gmail_handler = gmail_handler
 
         logger.info("MessagingHandler initialized")
 
@@ -179,6 +181,9 @@ class MessagingHandler:
 
             # Build tools list
             tools = []
+            # Enable Google Search Grounding
+            tools.append({"google_search": {}})
+
             if declarations:
                 tools.append({
                     "function_declarations": declarations
@@ -325,6 +330,7 @@ class MessagingHandler:
             to_number: Recipient's phone number
             message_body: Message text
             medium: 'sms' or 'whatsapp'
+            medium: 'sms', 'whatsapp', or 'gmail'
             from_number: Optional sender number override
 
         Returns:
@@ -340,6 +346,14 @@ class MessagingHandler:
             except:
                 pass
             # #endregion
+
+            # Handle Gmail medium
+            if medium == 'gmail':
+                if self.gmail_handler:
+                    # For Gmail, to_number is the email address
+                    subject = "TARS Reply"
+                    return str(self.gmail_handler.send_email(to_number, subject, message_body))
+                return None
 
             # Format phone numbers for Twilio
             if not from_number:

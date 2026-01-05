@@ -11,14 +11,27 @@ logger = logging.getLogger(__name__)
 
 
 def authenticate_phone_number(phone: str) -> PermissionLevel:
-    """Determine permission level based on phone number.
+    """Determine permission level based on phone number OR email address.
 
     Args:
-        phone: Caller's phone number
+        phone: Caller's phone number or email address
 
     Returns:
         PermissionLevel.FULL for Máté's number, LIMITED for others
     """
+    # Check if input is an email address
+    if '@' in phone:
+        # Allow access if sender matches TARGET_EMAIL or if user is emailing themselves (GMAIL_USER)
+        allowed_emails = [e.lower().strip()
+                          for e in [Config.TARGET_EMAIL, Config.GMAIL_USER] if e]
+        if phone.lower().strip() in allowed_emails:
+            logger.info(f"Email {phone} authenticated as Máté (FULL access)")
+            return PermissionLevel.FULL
+        else:
+            logger.info(
+                f"Email {phone} authenticated as unknown (LIMITED access)")
+            return PermissionLevel.LIMITED
+
     # Normalize phone numbers for comparison (remove prefixes, spaces, dashes, etc.)
     normalized_phone = phone.replace('whatsapp:', '').replace(
         ' ', '').replace('-', '').replace('(', '').replace(')', '')

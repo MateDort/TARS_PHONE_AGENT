@@ -215,14 +215,14 @@ Be conversational, friendly, and helpful."""
     
     async def send_text(self, text: str, end_of_turn: bool = True):
         """Send text input to Gemini.
-        
+
         Args:
             text: Text message
             end_of_turn: Whether this ends the user's turn
         """
         if not self.session or not self.is_connected:
             raise RuntimeError("Not connected to Gemini Live")
-        
+
         try:
             await self.session.send(
                 input=text,
@@ -231,6 +231,91 @@ Be conversational, friendly, and helpful."""
         except Exception as e:
             logger.error(f"Error sending text: {e}")
             raise
+
+    async def send_text_or_message(self, text: str, end_of_turn: bool = True):
+        """Decide whether to speak text or send as message based on length/complexity.
+
+        Args:
+            text: Response text to deliver
+            end_of_turn: Whether this ends the turn
+
+        Returns:
+            True if sent via message, False if spoken
+        """
+        # Estimate speaking time (rough: 150 words per minute)
+        word_count = len(text.split())
+        estimated_seconds = (word_count / 150) * 60
+
+        # Thresholds
+        MAX_SPEAKING_SECONDS = 30  # Don't speak for more than 30 seconds
+        LONG_RESPONSE_INDICATOR_WORDS = ['breakdown', 'details', 'list', 'steps', 'explanation']
+
+        should_message = False
+        reason = ""
+
+        # Check if response is too long
+        if estimated_seconds > MAX_SPEAKING_SECONDS:
+            should_message = True
+            reason = "detailed explanation"
+
+        # Check if response contains structured content (lists, breakdowns)
+        if any(word in text.lower() for word in LONG_RESPONSE_INDICATOR_WORDS):
+            if word_count > 50:  # Only if substantial
+                should_message = True
+                reason = "structured breakdown"
+
+        # Check for multiple line breaks (formatted content)
+        if text.count('\n') > 5:
+            should_message = True
+            reason = "formatted content"
+
+        if should_message:
+            # Send brief summary via voice + full content via message
+            brief_summary = self._generate_brief_summary(text)
+
+            # Speak brief version
+            await self.send_text(
+                f"{brief_summary} I've sent you the full {reason} in a message, sir.",
+                end_of_turn=False
+            )
+
+            # Send full content via Gmail
+            if self._session_context and hasattr(self._session_context, 'session_id'):
+                # Get the session from session manager via function handler context
+                if hasattr(self, '_session_manager_ref'):
+                    session_manager = self._session_manager_ref
+                    if hasattr(session_manager, 'gmail_handler') and session_manager.gmail_handler:
+                        await session_manager.gmail_handler.send_detailed_response(
+                            session_id=self._session_context.session_id,
+                            content=text,
+                            response_type=reason
+                        )
+
+            return True  # Handled via message
+
+        else:
+            # Short enough to speak
+            await self.send_text(text, end_of_turn=end_of_turn)
+            return False
+
+    def _generate_brief_summary(self, long_text: str) -> str:
+        """Extract or generate brief summary of long content.
+
+        Args:
+            long_text: Full text to summarize
+
+        Returns:
+            Brief summary (first sentence or 100 chars)
+        """
+        # Take first sentence or first 100 characters
+        sentences = long_text.split('. ')
+        if sentences:
+            brief = sentences[0]
+            if len(brief) > 100:
+                brief = brief[:100] + "..."
+            return brief
+        else:
+            return long_text[:100] + "..."
     
     async def _receive_loop(self):
         """Main loop for receiving responses from Gemini."""
