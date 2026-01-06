@@ -67,14 +67,47 @@ class Config:
     NATIONALITY = os.getenv('NATIONALITY', 'British')  # Default: British
 
     # Delivery Method Configuration
-    # Options: call, message, both
+    # Options: call, message, email, both
     REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')
-    # Options: call, message, both
+    # Options: call, message, email, both
     CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')
 
     # Agent Hub Configuration
     # Hard limit for concurrent calls
     MAX_CONCURRENT_SESSIONS = int(os.getenv('MAX_CONCURRENT_SESSIONS', '10'))
+
+    # Polling & Timing Configuration
+    REMINDER_CHECK_INTERVAL = int(os.getenv('REMINDER_CHECK_INTERVAL', '60'))  # Check reminders every N seconds
+    GMAIL_POLL_INTERVAL = int(os.getenv('GMAIL_POLL_INTERVAL', '2'))  # Check Gmail every N seconds
+
+    # Conversation & Memory Configuration
+    CONVERSATION_HISTORY_LIMIT = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '10'))  # Messages to remember
+    MAX_FUNCTION_CALLS = int(os.getenv('MAX_FUNCTION_CALLS', '5'))  # Max function calls per request
+
+    # Feature Flags
+    ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'true').lower() == 'true'
+    ENABLE_FUNCTION_CALLING = os.getenv('ENABLE_FUNCTION_CALLING', 'true').lower() == 'true'
+    ENABLE_SESSION_PERSISTENCE = os.getenv('ENABLE_SESSION_PERSISTENCE', 'true').lower() == 'true'
+    ENABLE_CALL_SUMMARIES = os.getenv('ENABLE_CALL_SUMMARIES', 'true').lower() == 'true'
+    SAVE_CONVERSATION_TRANSCRIPTS = os.getenv('SAVE_CONVERSATION_TRANSCRIPTS', 'true').lower() == 'true'
+
+    # Logging Configuration
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()  # DEBUG, INFO, WARNING, ERROR
+    ENABLE_DEBUG_LOGGING = os.getenv('ENABLE_DEBUG_LOGGING', 'false').lower() == 'true'
+
+    # Database Configuration
+    DATABASE_PATH = os.getenv('DATABASE_PATH', 'tars.db')
+    BACKUP_INTERVAL = int(os.getenv('BACKUP_INTERVAL', '24'))  # Backup every N hours
+    MAX_CONVERSATION_AGE = int(os.getenv('MAX_CONVERSATION_AGE', '90'))  # Days to keep conversations
+
+    # Security Configuration
+    REQUIRE_PIN_FOR_UNKNOWN = os.getenv('REQUIRE_PIN_FOR_UNKNOWN', 'false').lower() == 'true'
+    ALLOW_UNKNOWN_CALLERS = os.getenv('ALLOW_UNKNOWN_CALLERS', 'true').lower() == 'true'
+    MAX_UNKNOWN_CALL_DURATION = int(os.getenv('MAX_UNKNOWN_CALL_DURATION', '5'))  # Minutes
+
+    # Approval & Workflow Configuration
+    ENABLE_APPROVAL_REQUESTS = os.getenv('ENABLE_APPROVAL_REQUESTS', 'true').lower() == 'true'
+    APPROVAL_TIMEOUT_MINUTES = int(os.getenv('APPROVAL_TIMEOUT_MINUTES', '5'))  # Minutes until timeout
 
     @classmethod
     def validate(cls):
@@ -105,7 +138,7 @@ class Config:
                 f"PERSONALITY must be one of: {', '.join(valid_personalities)}")
 
         # Validate delivery method settings
-        valid_delivery_methods = ['call', 'message', 'both']
+        valid_delivery_methods = ['call', 'message', 'email', 'both']
         if cls.REMINDER_DELIVERY.lower() not in valid_delivery_methods:
             errors.append(
                 f"REMINDER_DELIVERY must be one of: {', '.join(valid_delivery_methods)}")
@@ -134,7 +167,13 @@ class Config:
         cls.GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')
         cls.AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower() == 'true'
         cls.ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'
-        cls.ENABLE_WHATSAPP = os.getenv(
-            'ENABLE_WHATSAPP', 'true').lower() == 'true'
+        cls.ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
+        cls.REMINDER_CHECK_INTERVAL = int(os.getenv('REMINDER_CHECK_INTERVAL', '60'))
+        cls.GMAIL_POLL_INTERVAL = int(os.getenv('GMAIL_POLL_INTERVAL', '2'))
+        cls.CONVERSATION_HISTORY_LIMIT = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '10'))
+        cls.MAX_FUNCTION_CALLS = int(os.getenv('MAX_FUNCTION_CALLS', '5'))
+        cls.ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'true').lower() == 'true'
+        cls.ENABLE_FUNCTION_CALLING = os.getenv('ENABLE_FUNCTION_CALLING', 'true').lower() == 'true'
+        cls.LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 
         return True

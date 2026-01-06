@@ -198,6 +198,7 @@ class TARSPhoneAgent:
             "send_notification": agents["notification"],
             # May be None if messaging not available
             "send_message": agents.get("message"),
+            "send_link_to_user": agents.get("messaging"),  # Register send_link_to_user
             # May be None if twilio not available
             "make_goal_call": agents.get("outbound_call"),
             # InterSessionAgent functions

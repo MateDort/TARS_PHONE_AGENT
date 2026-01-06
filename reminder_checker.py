@@ -27,7 +27,12 @@ class ReminderChecker:
         self.router = router
         self.messaging_handler = None  # Will be set by main
         self.running = False
-        self.check_interval = 60  # Check every 60 seconds
+        self.check_interval = Config.REMINDER_CHECK_INTERVAL  # Check every N seconds (configurable)
+    
+    def update_check_interval(self):
+        """Update check interval from config (called when config changes)."""
+        self.check_interval = Config.REMINDER_CHECK_INTERVAL
+        logger.info(f"Reminder check interval updated to {self.check_interval} seconds")
 
         # Track pending reminder for current call (deprecated - kept for compatibility)
         self.pending_reminder_id = None
@@ -41,10 +46,13 @@ class ReminderChecker:
         while self.running:
             try:
                 await self._check_reminders()
-                await asyncio.sleep(self.check_interval)
+                # Read interval from config each time (allows dynamic updates)
+                interval = Config.REMINDER_CHECK_INTERVAL
+                await asyncio.sleep(interval)
             except Exception as e:
                 logger.error(f"Error in reminder checker: {e}")
-                await asyncio.sleep(self.check_interval)
+                interval = Config.REMINDER_CHECK_INTERVAL
+                await asyncio.sleep(interval)
     
     def stop(self):
         """Stop the reminder checker."""
@@ -156,27 +164,68 @@ class ReminderChecker:
             if delivery_method in ['call', 'both']:
                 if self.twilio_handler:
                     try:
+                        # Store reminder_id in twilio_handler so it can be marked complete when call is answered
+                        if hasattr(self.twilio_handler, 'pending_reminder_id'):
+                            self.twilio_handler.pending_reminder_id = reminder_id
                         self.twilio_handler.make_call(
                             to_number=Config.TARGET_PHONE_NUMBER,
                             reminder_message=title
                         )
-                        logger.info(f"Initiated reminder call for: {title}")
+                        logger.info(f"Initiated reminder call for: {title} (reminder_id: {reminder_id})")
                     except Exception as e:
                         logger.error(f"Error making reminder call: {e}")
 
-            # Send via message
+            # Send via message (SMS)
             if delivery_method in ['message', 'both']:
                 if self.messaging_handler:
                     try:
                         message_text = f"⏰ Reminder: {title}"
                         await self.messaging_handler.send_message(
                             to_number=Config.TARGET_PHONE_NUMBER,
-                            message=message_text,
+                            message_body=message_text,
                             medium='sms'
                         )
                         logger.info(f"Sent reminder SMS for: {title}")
                     except Exception as e:
                         logger.error(f"Error sending reminder SMS: {e}")
+
+            # Send via email
+            if delivery_method in ['email', 'both']:
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "reminder_checker.py:_handle_due_reminder:before_email", "message": "About to send reminder email", "data": {"delivery_method": delivery_method, "has_messaging_handler": self.messaging_handler is not None, "has_gmail_handler": self.messaging_handler.gmail_handler is not None if self.messaging_handler else False, "title": title, "target_email": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
+                if self.messaging_handler and self.messaging_handler.gmail_handler:
+                    try:
+                        message_text = f"⏰ Reminder: {title}"
+                        result = self.messaging_handler.gmail_handler.send_email(
+                            to_email=Config.TARGET_EMAIL,
+                            subject=f"⏰ TARS Reminder: {title}",
+                            body=message_text
+                        )
+                        # #region debug log
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json
+                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "reminder_checker.py:_handle_due_reminder:after_email", "message": "Reminder email sent", "data": {"result": str(result), "title": title}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                        except:
+                            pass
+                        # #endregion
+                        logger.info(f"Sent reminder email for: {title}")
+                    except Exception as e:
+                        # #region debug log
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json
+                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "reminder_checker.py:_handle_due_reminder:email_error", "message": "Error sending reminder email", "data": {"error": str(e), "title": title}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                        except:
+                            pass
+                        # #endregion
+                        logger.error(f"Error sending reminder email: {e}")
 
         # Mark as triggered
         self.db.mark_reminder_triggered(reminder_id)

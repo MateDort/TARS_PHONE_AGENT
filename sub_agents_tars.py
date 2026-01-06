@@ -37,8 +37,10 @@ class ConfigAgent(SubAgent):
         action = args.get("action", "get")
         setting = args.get("setting", "").lower()
 
-        if setting not in ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report"]:
-            return "Please specify: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', or 'callback_report'."
+        valid_settings = ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report", 
+                         "voice", "reminder_check_interval", "gmail_poll_interval", "conversation_history_limit"]
+        if setting not in valid_settings:
+            return f"Please specify one of: {', '.join(valid_settings)}."
 
         if action == "set":
             return await self._set_config(setting, args.get("value"))
@@ -115,7 +117,7 @@ class ConfigAgent(SubAgent):
 
         # Handle reminder_delivery setting
         elif setting == "reminder_delivery":
-            valid_methods = ['call', 'message', 'both']
+            valid_methods = ['call', 'message', 'email', 'both']
             value_str = str(value).lower()
             if value_str not in valid_methods:
                 return f"Invalid reminder delivery method. Please choose: {', '.join(valid_methods)}"
@@ -131,7 +133,7 @@ class ConfigAgent(SubAgent):
 
         # Handle callback_report setting
         elif setting == "callback_report":
-            valid_methods = ['call', 'message', 'both']
+            valid_methods = ['call', 'message', 'email', 'both']
             value_str = str(value).lower()
             if value_str not in valid_methods:
                 return f"Invalid callback report method. Please choose: {', '.join(valid_methods)}"
@@ -145,7 +147,88 @@ class ConfigAgent(SubAgent):
             logger.info(f"Updated callback report to {value_str}")
             return f"Callback report method updated to '{value_str}', sir."
 
+        # Handle voice setting
+        elif setting == "voice":
+            valid_voices = ['puck', 'kore', 'charon']
+            value_str = str(value).lower()
+            if value_str not in valid_voices:
+                return f"Invalid voice. Please choose: {', '.join(valid_voices)}"
+
+            setting_key = "GEMINI_VOICE"
+            os.environ[setting_key] = value_str.capitalize()
+            self._update_env_file(setting_key, value_str.capitalize())
+            Config.reload()
+            self.db.set_config(setting_key, value_str.capitalize())
+
+            logger.info(f"Updated voice to {value_str.capitalize()}")
+            return f"Voice updated to '{value_str.capitalize()}', sir."
+
+        # Handle reminder_check_interval setting
+        elif setting == "reminder_check_interval":
+            try:
+                value_int = int(value)
+                if value_int < 10:
+                    return "Reminder check interval must be at least 10 seconds, sir."
+                if value_int > 3600:
+                    return "Reminder check interval cannot exceed 3600 seconds (1 hour), sir."
+            except (ValueError, TypeError):
+                return "Invalid interval. Please provide a number in seconds, sir."
+
+            setting_key = "REMINDER_CHECK_INTERVAL"
+            os.environ[setting_key] = str(value_int)
+            self._update_env_file(setting_key, str(value_int))
+            Config.reload()
+            self.db.set_config(setting_key, str(value_int))
+
+            logger.info(f"Updated reminder check interval to {value_int} seconds")
+            return f"Reminder check interval updated to {value_int} seconds, sir."
+
+        # Handle gmail_poll_interval setting
+        elif setting == "gmail_poll_interval":
+            try:
+                value_int = int(value)
+                if value_int < 1:
+                    return "Gmail poll interval must be at least 1 second, sir."
+                if value_int > 300:
+                    return "Gmail poll interval cannot exceed 300 seconds (5 minutes), sir."
+            except (ValueError, TypeError):
+                return "Invalid interval. Please provide a number in seconds, sir."
+
+            setting_key = "GMAIL_POLL_INTERVAL"
+            os.environ[setting_key] = str(value_int)
+            self._update_env_file(setting_key, str(value_int))
+            Config.reload()
+            self.db.set_config(setting_key, str(value_int))
+
+            logger.info(f"Updated Gmail poll interval to {value_int} seconds")
+            return f"Gmail poll interval updated to {value_int} seconds, sir."
+
+        # Handle conversation_history_limit setting
+        elif setting == "conversation_history_limit":
+            try:
+                value_int = int(value)
+                if value_int < 1:
+                    return "Conversation history limit must be at least 1, sir."
+                if value_int > 100:
+                    return "Conversation history limit cannot exceed 100 messages, sir."
+            except (ValueError, TypeError):
+                return "Invalid limit. Please provide a number, sir."
+
+            setting_key = "CONVERSATION_HISTORY_LIMIT"
+            os.environ[setting_key] = str(value_int)
+            self._update_env_file(setting_key, str(value_int))
+            Config.reload()
+            self.db.set_config(setting_key, str(value_int))
+
+            logger.info(f"Updated conversation history limit to {value_int}")
+            return f"Conversation history limit updated to {value_int} messages, sir."
+
         return f"Unknown setting: {setting}"
+
+    def get_valid_settings(self) -> list:
+        """Get list of all valid settings that can be adjusted."""
+        return ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report", 
+                "voice", "reminder_check_interval", "gmail_poll_interval", "conversation_history_limit"]
 
     async def _get_config(self, setting: str) -> str:
         """Get current configuration value."""
@@ -167,6 +250,18 @@ class ConfigAgent(SubAgent):
         elif setting == "callback_report":
             value = Config.CALLBACK_REPORT
             return f"Current callback report method is '{value}', sir."
+        elif setting == "voice":
+            value = Config.GEMINI_VOICE
+            return f"Current voice is '{value}', sir."
+        elif setting == "reminder_check_interval":
+            value = Config.REMINDER_CHECK_INTERVAL
+            return f"Current reminder check interval is {value} seconds, sir."
+        elif setting == "gmail_poll_interval":
+            value = Config.GMAIL_POLL_INTERVAL
+            return f"Current Gmail poll interval is {value} seconds, sir."
+        elif setting == "conversation_history_limit":
+            value = Config.CONVERSATION_HISTORY_LIMIT
+            return f"Current conversation history limit is {value} messages, sir."
         else:
             return f"Unknown setting: {setting}"
 
@@ -433,6 +528,26 @@ class ReminderAgent(SubAgent):
         now = datetime.now()
         target_time = now
 
+        # Check for relative time expressions like "in X minutes/hours" (handle typos like "miute")
+        relative_match = re.search(r'in\s+(\d+)\s+(minute|minutes|miute|miutes|hour|hours|second|seconds)', time_str, re.IGNORECASE)
+        if relative_match:
+            amount = int(relative_match.group(1))
+            unit = relative_match.group(2).lower()
+            
+            if unit in ['minute', 'minutes']:
+                target_time = now + timedelta(minutes=amount)
+            elif unit in ['hour', 'hours']:
+                target_time = now + timedelta(hours=amount)
+            elif unit in ['second', 'seconds']:
+                target_time = now + timedelta(seconds=amount)
+            
+            # Return early for relative times
+            return {
+                'datetime': target_time,
+                'recurrence': recurrence,
+                'days_of_week': days_of_week
+            }
+
         # Extract time with optional minutes (3pm, 8:30am, 09:14 AM, etc.)
         time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', time_str)
         if time_match:
@@ -685,13 +800,14 @@ class MessageAgent(SubAgent):
                 "action": "send" or "send_link",
                 "message": str (message text or link description),
                 "link": str (URL for send_link action),
-                "medium": "sms" or "whatsapp"
+                "medium": "gmail", "sms", or "whatsapp" (defaults to "gmail")
             }
         """
         action = args.get("action", "send")
         message = args.get("message", "")
         link = args.get("link", "")
-        medium = args.get("medium", "sms")
+        # Default to gmail since we're using Gmail platform
+        medium = args.get("medium", "gmail")
 
         logger.info(f"MessageAgent: {action} via {medium}")
 
@@ -1211,16 +1327,50 @@ class InterSessionAgent(SubAgent):
 
         source_session = args.get('_source_session')
 
+        # #region debug log
+        try:
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import json
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "sub_agents_tars.py:_hangup_call:entry", "message": "Hangup call requested", "data": {"target_name": target_name, "has_source_session": source_session is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+        except:
+            pass
+        # #endregion
+
         if target_name.lower() == 'current':
             if source_session:
                 target_session = source_session
             else:
                 return "I cannot determine the 'current' call to hang up."
         else:
+            # Try exact match first
             target_session = await self.session_manager.get_session_by_name(target_name)
+            
+            # If not found, try fuzzy matching - extract name from "Call with {name}"
+            if not target_session and "call with" in target_name.lower():
+                # Extract the name part (e.g., "John" from "Call with John")
+                name_part = target_name.lower().replace("call with", "").strip()
+                # Try to find session by contact name
+                all_sessions = await self.session_manager.get_active_sessions()
+                for session in all_sessions:
+                    session_name_lower = session.session_name.lower()
+                    if name_part in session_name_lower or session_name_lower.endswith(name_part):
+                        target_session = session
+                        break
+            
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "sub_agents_tars.py:_hangup_call:after_lookup", "message": "After session lookup", "data": {"found": target_session is not None, "session_name": target_session.session_name if target_session else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
 
         if not target_session:
-            return f"I could not find an active session named '{target_name}' to hang up."
+            # List available sessions for debugging
+            all_sessions = await self.session_manager.get_active_sessions()
+            session_names = [s.session_name for s in all_sessions]
+            return f"I could not find an active session named '{target_name}' to hang up. Active sessions: {', '.join(session_names) if session_names else 'none'}."
 
         if not target_session.is_active():
             return f"The session '{target_name}' is not currently active."
@@ -1252,9 +1402,14 @@ class MessagingAgent(SubAgent):
         Args:
             args: {
                 "action": "send_link|suggest_call|send_snapshot",
+                OR for send_link_to_user: {"url": str, "description": str}
                 ... (action-specific parameters)
             }
         """
+        # Handle send_link_to_user function (no action parameter, just url/description)
+        if "url" in args and "action" not in args:
+            return await self._send_link(args)
+        
         action = args.get("action", "send_link")
 
         if action == "send_link":
@@ -1288,11 +1443,27 @@ class MessagingAgent(SubAgent):
 
         # Not on call, send via message
         if self.messaging_handler:
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "sub_agents_tars.py:MessageAgent:send_link:before_send", "message": "About to send link via messaging_handler", "data": {"to_number": Config.TARGET_EMAIL, "medium": "gmail", "has_gmail_handler": self.messaging_handler.gmail_handler is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             self.messaging_handler.send_message(
                 to_number=Config.TARGET_EMAIL,
                 message_body=f"{description}\n\n{url}" if description else url,
                 medium='gmail'
             )
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "sub_agents_tars.py:MessageAgent:send_link:after_send", "message": "After send_message call", "data": {}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             return f"Link sent via email, sir."
 
         return "Unable to send link at the moment."
@@ -1370,7 +1541,7 @@ def get_function_declarations() -> list:
     return [
         {
             "name": "adjust_config",
-            "description": "Adjust TARS settings. Use when Máté asks to change humor/honesty levels, personality style, nationality, or delivery methods. Examples: 'set humor to 65%', 'make yourself more chatty', 'set personality to brief', 'become American', 'send reminders via message', 'set callback report to both'",
+            "description": "Adjust TARS settings. Available settings: humor (0-100%), honesty (0-100%), personality (chatty/normal/brief), nationality, reminder_delivery (call/message/email/both), callback_report (call/message/email/both), voice (Puck/Kore/Charon), reminder_check_interval (seconds), gmail_poll_interval (seconds), conversation_history_limit (messages). Examples: 'set humor to 65%', 'make yourself more chatty', 'set personality to brief', 'become American', 'send reminders via email', 'set callback report to both', 'set voice to Kore', 'set reminder check interval to 30 seconds'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -1380,11 +1551,11 @@ def get_function_declarations() -> list:
                     },
                     "setting": {
                         "type": "STRING",
-                        "description": "Setting to adjust: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', or 'callback_report'"
+                        "description": "Setting to adjust: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', 'callback_report', 'voice', 'reminder_check_interval', 'gmail_poll_interval', or 'conversation_history_limit'"
                     },
                     "value": {
                         "type": "STRING",
-                        "description": "New value. For humor/honesty: 0-100. For personality: 'chatty', 'normal', or 'brief'. For nationality: any nationality. For reminder_delivery/callback_report: 'call', 'message', or 'both'."
+                        "description": "New value. For humor/honesty: 0-100. For personality: 'chatty', 'normal', or 'brief'. For nationality: any nationality. For reminder_delivery/callback_report: 'call', 'message', 'email', or 'both'. For voice: 'Puck', 'Kore', or 'Charon'. For intervals: number in seconds. For conversation_history_limit: number of messages."
                     }
                 },
                 "required": ["action", "setting"]

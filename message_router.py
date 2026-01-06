@@ -339,7 +339,7 @@ class MessageRouter:
         # Get callback method from config
         callback_method = getattr(Config, 'CALLBACK_REPORT', 'message').lower()
 
-        # Send via message
+        # Send via message (SMS)
         if callback_method in ['message', 'both']:
             try:
                 # Format SMS text
@@ -353,9 +353,9 @@ class MessageRouter:
                     sms_text = f"Message from {from_name}:\n\n{message_body}"
 
                 # Send SMS
-                await self.messaging_handler.send_message(
+                self.messaging_handler.send_message(
                     to_number=Config.TARGET_PHONE_NUMBER,
-                    message=sms_text,
+                    message_body=sms_text,
                     medium='sms'
                 )
 
@@ -365,6 +365,37 @@ class MessageRouter:
 
             except Exception as e:
                 logger.error(f"Failed to send fallback SMS: {e}")
+
+        # Send via email
+        if callback_method in ['email', 'both']:
+            try:
+                if self.messaging_handler and self.messaging_handler.gmail_handler:
+                    # Format email subject and body
+                    if message_type == "reminder":
+                        subject = f"⏰ TARS Reminder"
+                        email_body = message_body
+                    elif message_type == "notification":
+                        subject = f"📢 TARS Notification"
+                        email_body = message_body
+                    elif message_type == "call_completion_report":
+                        subject = f"📞 Call Report"
+                        email_body = message_body
+                    else:
+                        subject = f"Message from {from_name}"
+                        email_body = message_body
+
+                    self.messaging_handler.gmail_handler.send_email(
+                        to_email=Config.TARGET_EMAIL,
+                        subject=subject,
+                        body=email_body
+                    )
+
+                    logger.info(
+                        f"Sent fallback email for message {msg['message_id'][:8]}"
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to send fallback email: {e}")
 
         # Send via call
         if callback_method in ['call', 'both']:

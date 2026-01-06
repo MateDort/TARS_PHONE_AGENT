@@ -60,7 +60,64 @@ class MessagingHandler:
             logger.info(
                 f"Processing incoming {medium} from {from_number}: {message_body}")
 
-            # Log incoming message to database
+            # Check if this is a response to a reminder (mark as complete if user says "done")
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:process_incoming_message:check_reminder", "message": "Checking if reminder response", "data": {"message_lower": message_body.lower()[:50]}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            message_lower = message_body.lower().strip()
+            if message_lower in ['done', 'ok', 'okay', 'yes', 'complete', 'finished']:
+                # Check if there's a recent reminder that was triggered
+                recent_reminders = self.db.get_reminders(active_only=True)
+                for reminder in recent_reminders:
+                    if reminder.get('last_triggered'):
+                        last_triggered = datetime.fromisoformat(reminder['last_triggered'])
+                        # If reminder was triggered in last 5 minutes, mark as complete
+                        if (datetime.now() - last_triggered).total_seconds() < 300:
+                            # #region debug log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import json
+                                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:process_incoming_message:mark_complete", "message": "Marking reminder complete", "data": {"reminder_id": reminder['id'], "title": reminder['title']}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                            except:
+                                pass
+                            # #endregion
+                            if not reminder.get('recurrence'):
+                                # Non-recurring reminder - mark as complete
+                                self.db.mark_reminder_complete(reminder['id'])
+                                logger.info(f"Marked reminder {reminder['id']} ({reminder['title']}) as complete from user response")
+                            else:
+                                # Recurring reminder - just mark as triggered (already done)
+                                logger.info(f"Recurring reminder {reminder['id']} acknowledged by user")
+                            break
+
+            # Authenticate sender to determine permission level
+            permission_level = authenticate_phone_number(from_number)
+
+            # Get conversation context BEFORE saving current message (to avoid including it twice)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "messaging_handler.py:process_incoming_message:before_context", "message": "About to get context", "data": {"limit": Config.CONVERSATION_HISTORY_LIMIT}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            context = self.db.get_conversation_context(limit=Config.CONVERSATION_HISTORY_LIMIT)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "messaging_handler.py:process_incoming_message:after_context", "message": "Context retrieved", "data": {"context_length": len(context) if context else 0}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+
+            # Log incoming message to database AFTER getting context
             self.db.add_conversation_message(
                 sender='user',
                 message=message_body,
@@ -68,12 +125,14 @@ class MessagingHandler:
                 message_sid=message_sid,
                 direction='inbound'
             )
-
-            # Authenticate sender to determine permission level
-            permission_level = authenticate_phone_number(from_number)
-
-            # Get conversation context for better AI responses
-            context = self.db.get_conversation_context(limit=10)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "messaging_handler.py:process_incoming_message:after_save", "message": "Message saved to DB", "data": {}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
 
             # Prepare system instruction with context
             from translations import format_text
@@ -96,9 +155,22 @@ class MessagingHandler:
                                                  honesty_percentage=Config.HONESTY_PERCENTAGE, personality=Config.PERSONALITY, nationality=Config.NATIONALITY)
                 system_instruction += "\n\n" + get_limited_system_instruction()
 
-            # IMPORTANT: For SMS/WhatsApp, the AI should NOT call send_message function
-            # It should just return text. The send_message function is only for sending links.
-            system_instruction += "\n\nIMPORTANT: You are responding via text message. Do NOT call the send_message function unless you are sending a link. Just return your response as text."
+            # IMPORTANT: For email/Gmail, you can call functions normally (reminders, contacts, etc.)
+            # Only use send_message function when explicitly sending links or when the user asks to send something
+            if medium == 'gmail':
+                system_instruction += "\n\nIMPORTANT: You are responding via email. You can call functions normally (manage_reminder, lookup_contact, adjust_config, etc.). Use send_message only when sending links or when explicitly requested."
+            else:
+                # For SMS/WhatsApp, the AI should NOT call send_message function
+                system_instruction += "\n\nIMPORTANT: You are responding via text message. Do NOT call the send_message function unless you are sending a link. Just return your response as text."
+            
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:process_incoming_message:before_tools", "message": "Before building tools", "data": {"medium": medium, "has_declarations": len(all_declarations) > 0 if 'all_declarations' in locals() else False}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             
             # Add Google Search availability notice
             system_instruction += "\n\nYou have access to Google Search for real-time information. Use it automatically for queries about current weather, news, stock prices, or any information that requires up-to-date data. Google Search is enabled and will be used automatically when needed."
@@ -197,10 +269,30 @@ class MessagingHandler:
                 # Just google_search
                 tools = [{"google_search": {}}]
 
+            # Get conversation context for better AI responses
+            context = self.db.get_conversation_context(limit=Config.CONVERSATION_HISTORY_LIMIT)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "messaging_handler.py:_generate_text_response:context_retrieved", "message": "Retrieved conversation context", "data": {"context_length": len(context) if context else 0, "limit": Config.CONVERSATION_HISTORY_LIMIT}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            
             # Build conversation history for the API call
             conversation_history = [
                 types.Content(parts=[types.Part(text=message)], role="user")
             ]
+            
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:_generate_text_response:before_api_call", "message": "Before API call", "data": {"has_tools": tools is not None, "tools_count": len(tools) if tools else 0, "conversation_history_length": len(conversation_history)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
 
             response = await client.aio.models.generate_content(
                 model=model,
@@ -214,47 +306,82 @@ class MessagingHandler:
                 )
             )
 
-            # Handle function calls if present (same logic as phone calls)
-            if response.candidates and response.candidates[0].content.parts:
-                first_part = response.candidates[0].content.parts[0]
-                if hasattr(first_part, 'function_call') and first_part.function_call:
-                    function_call = first_part.function_call
-                    function_name = function_call.name
-                    function_args = dict(function_call.args)
+            # Handle function calls if present (loop to handle multiple calls)
+            max_function_calls = Config.MAX_FUNCTION_CALLS  # Prevent infinite loops (configurable)
+            function_call_count = 0
+            
+            while function_call_count < max_function_calls:
+                has_function_call = False
+                function_responses = []
+                
+                if response.candidates and response.candidates[0].content.parts:
+                    # Check all parts for function calls
+                    for part in response.candidates[0].content.parts:
+                        if hasattr(part, 'function_call') and part.function_call:
+                            has_function_call = True
+                            function_call = part.function_call
+                            function_name = function_call.name
+                            function_args = dict(function_call.args)
 
-                    logger.info(
-                        f"Function call in message: {function_name}({function_args})")
+                            logger.info(
+                                f"Function call in message: {function_name}({function_args})")
+                            
+                            # #region debug log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import json
+                                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:_generate_text_response:function_call", "message": "Function call detected", "data": {"function_name": function_name, "function_args": str(function_args)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                            except:
+                                pass
+                            # #endregion
 
-                    # Execute the function
-                    result = await self._execute_function(function_name, function_args)
+                            # Execute the function
+                            result = await self._execute_function(function_name, function_args)
+                            
+                            # #region debug log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import json
+                                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:_generate_text_response:function_result", "message": "Function executed", "data": {"function_name": function_name, "result_preview": str(result)[:100]}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                            except:
+                                pass
+                            # #endregion
 
-                    # Append the AI's function call and the result to the conversation
-                    conversation_history.append(response.candidates[0].content)
-                    conversation_history.append(
-                        types.Content(
-                            parts=[
+                            # Store function response
+                            function_responses.append(
                                 types.Part(
                                     function_response=types.FunctionResponse(
                                         name=function_name,
                                         response={'result': str(result)}
                                     )
                                 )
-                            ]
-                        )
+                            )
+                
+                if not has_function_call:
+                    break  # No more function calls, exit loop
+                
+                # Append the AI's function call and the results to the conversation
+                conversation_history.append(response.candidates[0].content)
+                conversation_history.append(
+                    types.Content(
+                        parts=function_responses
                     )
+                )
+                
+                function_call_count += 1
 
-                    # Get final response with function results
-                    response = await client.aio.models.generate_content(
-                        model=model,
-                        contents=conversation_history,
-                        config=types.GenerateContentConfig(
-                            system_instruction=types.Content(
-                                parts=[types.Part(text=system_instruction)]
-                            ) if system_instruction else None,
-                            tools=tools if tools else None,
-                            temperature=0.8,
-                        )
+                # Get response with function results
+                response = await client.aio.models.generate_content(
+                    model=model,
+                    contents=conversation_history,
+                    config=types.GenerateContentConfig(
+                        system_instruction=types.Content(
+                            parts=[types.Part(text=system_instruction)]
+                        ) if system_instruction else None,
+                        tools=tools if tools else None,
+                        temperature=0.8,
                     )
+                )
 
             # Extract text from response
             if response.candidates and response.candidates[0].content.parts:
@@ -333,9 +460,8 @@ class MessagingHandler:
         """Send outbound SMS or WhatsApp message.
 
         Args:
-            to_number: Recipient's phone number
+            to_number: Recipient's phone number or email address
             message_body: Message text
-            medium: 'sms' or 'whatsapp'
             medium: 'sms', 'whatsapp', or 'gmail'
             from_number: Optional sender number override
 
@@ -355,10 +481,35 @@ class MessagingHandler:
 
             # Handle Gmail medium
             if medium == 'gmail':
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:send_message:gmail_path", "message": "In Gmail path", "data": {"to_number": to_number, "has_gmail_handler": self.gmail_handler is not None, "message_length": len(message_body)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
                 if self.gmail_handler:
                     # For Gmail, to_number is the email address
                     subject = "TARS Reply"
-                    return str(self.gmail_handler.send_email(to_number, subject, message_body))
+                    result = self.gmail_handler.send_email(to_number, subject, message_body)
+                    # #region debug log
+                    try:
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json
+                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:send_message:gmail_sent", "message": "Gmail send_email result", "data": {"result": str(result), "to_email": to_number}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                    except:
+                        pass
+                    # #endregion
+                    return str(result)
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:send_message:gmail_no_handler", "message": "Gmail handler is None", "data": {}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
                 return None
 
             # Format phone numbers for Twilio

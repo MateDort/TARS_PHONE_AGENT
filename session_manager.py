@@ -182,7 +182,22 @@ class SessionManager:
             Tuple of (session_name, session_type)
         """
         if permission_level == PermissionLevel.FULL:
-            # This is Máté - check if already has main session
+            # Check if this is an outbound goal call (has purpose with contact name)
+            if purpose and ("OUTBOUND CALL TO" in purpose or "=== OUTBOUND CALL" in purpose):
+                # Extract contact name from goal message
+                # Format: "=== OUTBOUND CALL TO {NAME} ==="
+                import re
+                # Match "OUTBOUND CALL TO" followed by name (stops at === or newline)
+                # Contact names are uppercase in the message, but we'll convert to title case
+                match = re.search(r'OUTBOUND CALL TO ([A-Z\s\-]+?)(?:\s*===|\n|$)', purpose, re.IGNORECASE)
+                if match:
+                    contact_name = match.group(1).strip().title()  # Title case for proper formatting
+                    session_name = f"Call with {contact_name}"
+                    session_type = SessionType.OUTBOUND_GOAL
+                    logger.info(f"Outbound goal call detected - naming session: {session_name}")
+                    return session_name, session_type
+            
+            # Regular Máté session - check if already has main session
             mate_main = await self.get_mate_main_session()
 
             if mate_main and mate_main.is_active():
@@ -252,6 +267,11 @@ class SessionManager:
                 personality=Config.PERSONALITY,
                 nationality=Config.NATIONALITY
             )
+            
+            # Add conversation history context for phone calls
+            context = self.db.get_conversation_context(limit=Config.CONVERSATION_HISTORY_LIMIT)
+            if context:
+                system_instruction += f"\n\nRecent conversation history:\n{context}"
         else:
             # Add LIMITED access constraints
             base_instruction = format_text(

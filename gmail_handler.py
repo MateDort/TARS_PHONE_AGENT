@@ -62,8 +62,9 @@ class GmailHandler:
                 print(f"DEBUG: Error in polling loop: {e}")
                 logger.error(f"Error polling Gmail: {e}")
 
-            # Poll every 2 seconds for near real-time response
-            await asyncio.sleep(2)
+            # Poll every N seconds (configurable via GMAIL_POLL_INTERVAL)
+            poll_interval = Config.GMAIL_POLL_INTERVAL
+            await asyncio.sleep(poll_interval)
 
     def stop(self):
         """Stop polling."""
@@ -159,10 +160,36 @@ class GmailHandler:
         Returns:
             True if successful
         """
+        # #region debug log
+        try:
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import json
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:entry", "message": "send_email called", "data": {"to_email": to_email, "subject": subject[:50], "has_credentials": bool(self.email_user and self.email_pass)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+        except:
+            pass
+        # #endregion
+        
         if not self.email_user or not self.email_pass:
             logger.error("Cannot send email: Credentials missing")
             return False
 
+        # Validate email address format
+        from config import Config
+        if not to_email or '@' not in to_email:
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:invalid_email", "message": "Invalid email address", "data": {"to_email": to_email, "target_email": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            logger.error(f"Invalid email address: {to_email}. Using TARGET_EMAIL instead.")
+            to_email = Config.TARGET_EMAIL
+            if not to_email or '@' not in to_email:
+                logger.error(f"TARGET_EMAIL is also invalid: {to_email}")
+                return False
+        
         try:
             msg = MIMEMultipart()
             msg['From'] = f"TARS <{self.email_user}>"
@@ -175,7 +202,23 @@ class GmailHandler:
             server.starttls()
             server.login(self.email_user, self.email_pass)
             text = msg.as_string()
-            server.sendmail(self.email_user, to_email, text)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:before_sendmail", "message": "About to call sendmail", "data": {"from": self.email_user, "to": to_email}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            result = server.sendmail(self.email_user, to_email, text)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:after_sendmail", "message": "sendmail result", "data": {"result": str(result) if result else "success"}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             server.quit()
 
             logger.info(f"Sent email to {to_email}: {subject}")
@@ -191,6 +234,14 @@ class GmailHandler:
             return True
 
         except Exception as e:
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:error", "message": "SMTP error", "data": {"error": str(e), "to_email": to_email}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             logger.error(f"SMTP Error: {e}")
             return False
 

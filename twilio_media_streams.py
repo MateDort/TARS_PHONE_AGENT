@@ -48,6 +48,7 @@ class TwilioMediaStreamsHandler:
 
         # Pending reminder message for auto-calls
         self.pending_reminder = None
+        self.pending_reminder_id = None  # Track reminder_id to mark complete when answered
 
         # Audio buffer for seamless reconnection
         self.audio_buffer = []
@@ -377,7 +378,14 @@ class TwilioMediaStreamsHandler:
                                 # Reminder call to Máté
                                 await call_gemini_client.send_text(f"Announce reminder: {self.pending_reminder}", end_of_turn=True)
                                 print(f"   ⏰ Reminder message sent")
+                                # Mark reminder as complete since call was answered
+                                if self.pending_reminder_id and self.db:
+                                    reminder = self.db.get_reminder(self.pending_reminder_id)
+                                    if reminder and not reminder.get('recurrence'):
+                                        self.db.mark_reminder_complete(self.pending_reminder_id)
+                                        logger.info(f"Marked reminder {self.pending_reminder_id} as complete after call answered")
                             self.pending_reminder = None
+                            self.pending_reminder_id = None
 
                         elif session.permission_level.value == "full":
                             # Máté's session - regular greeting
