@@ -1,6 +1,7 @@
 """Local SQLite database for TARS - Máté's Personal Assistant."""
 import sqlite3
 import logging
+import json
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -272,6 +273,22 @@ class Database:
                 self.conn.execute("ALTER TABLE conversations ADD COLUMN context_snapshot_id INTEGER")
                 self.conn.commit()
                 logger.info("Session link columns added to conversations")
+
+            # Add embedding column to conversations table
+            if 'embedding' not in conv_columns:
+                logger.info("Adding embedding column to conversations table")
+                self.conn.execute("ALTER TABLE conversations ADD COLUMN embedding TEXT")
+                self.conn.commit()
+                logger.info("Embedding column added to conversations")
+
+            # Add session_name_embedding column to agent_sessions table
+            cursor = self.conn.execute("PRAGMA table_info(agent_sessions)")
+            session_columns = [row[1] for row in cursor.fetchall()]
+            if 'session_name_embedding' not in session_columns:
+                logger.info("Adding session_name_embedding column to agent_sessions table")
+                self.conn.execute("ALTER TABLE agent_sessions ADD COLUMN session_name_embedding TEXT")
+                self.conn.commit()
+                logger.info("Session name embedding column added")
 
         except Exception as e:
             logger.warning(f"Migration error (non-critical): {e}")
@@ -559,7 +576,7 @@ class Database:
 
     def add_conversation_message(self, sender: str, message: str, medium: str,
                                  call_sid: str = None, message_sid: str = None,
-                                 direction: str = None) -> int:
+                                 direction: str = None, embedding: str = None) -> int:
         """Add a conversation message to the database.
 
         Args:
@@ -569,6 +586,7 @@ class Database:
             call_sid: Twilio call SID (for phone calls)
             message_sid: Twilio message SID (for SMS/WhatsApp)
             direction: 'inbound' or 'outbound'
+            embedding: Optional JSON string of embedding vector
 
         Returns:
             Conversation message ID
@@ -576,9 +594,9 @@ class Database:
         timestamp = datetime.now().isoformat()
         cursor = self.conn.execute(
             """INSERT INTO conversations
-               (timestamp, sender, message, medium, call_sid, message_sid, direction)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (timestamp, sender, message, medium, call_sid, message_sid, direction)
+               (timestamp, sender, message, medium, call_sid, message_sid, direction, embedding)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (timestamp, sender, message, medium, call_sid, message_sid, direction, embedding)
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -657,6 +675,248 @@ class Database:
             (call_sid,)
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def search_conversations_by_date(self, date_str: str, limit: int = 50) -> List[Dict]:
+        """Search conversations by date.
+
+        Args:
+            date_str: Date string in various formats:
+                - "YYYY-MM-DD" (e.g., "2024-01-15")
+                - "last monday", "last tuesday", etc.
+                - "on the 12th of january", "january 12"
+            limit: Maximum number of messages to retrieve
+
+        Returns:
+            List of conversation dictionaries matching the date
+        """
+        from dateutil import parser, relativedelta
+        from datetime import datetime, timedelta
+
+        try:
+            # Parse date string
+            today = datetime.now().date()
+
+            # Handle relative dates
+            date_str_lower = date_str.lower().strip()
+            if "last monday" in date_str_lower:
+                days_since_monday = (today.weekday()) % 7
+                if days_since_monday == 0:
+                    days_since_monday = 7  # If today is Monday, get last Monday
+                target_date = today - timedelta(days=days_since_monday)
+            elif "last tuesday" in date_str_lower:
+                days_since_tuesday = (today.weekday() - 1) % 7
+                if days_since_tuesday == 0:
+                    days_since_tuesday = 7
+                target_date = today - timedelta(days=days_since_tuesday)
+            elif "last wednesday" in date_str_lower:
+                days_since_wednesday = (today.weekday() - 2) % 7
+                if days_since_wednesday == 0:
+                    days_since_wednesday = 7
+                target_date = today - timedelta(days=days_since_wednesday)
+            elif "last thursday" in date_str_lower:
+                days_since_thursday = (today.weekday() - 3) % 7
+                if days_since_thursday == 0:
+                    days_since_thursday = 7
+                target_date = today - timedelta(days=days_since_thursday)
+            elif "last friday" in date_str_lower:
+                days_since_friday = (today.weekday() - 4) % 7
+                if days_since_friday == 0:
+                    days_since_friday = 7
+                target_date = today - timedelta(days=days_since_friday)
+            elif "last saturday" in date_str_lower:
+                days_since_saturday = (today.weekday() - 5) % 7
+                if days_since_saturday == 0:
+                    days_since_saturday = 7
+                target_date = today - timedelta(days=days_since_saturday)
+            elif "last sunday" in date_str_lower:
+                days_since_sunday = (today.weekday() - 6) % 7
+                if days_since_sunday == 0:
+                    days_since_sunday = 7
+                target_date = today - timedelta(days=days_since_sunday)
+            else:
+                # Try to parse as date
+                try:
+                    parsed_date = parser.parse(date_str, fuzzy=True, default=datetime.now())
+                    target_date = parsed_date.date()
+                except:
+                    # Fallback: try to extract date from string like "12th of january"
+                    import re
+                    # Try to find day and month
+                    day_match = re.search(r'(\d+)(?:st|nd|rd|th)?', date_str_lower)
+                    month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', date_str_lower)
+                    if day_match and month_match:
+                        day = int(day_match.group(1))
+                        month_names = ['january', 'february', 'march', 'april', 'may', 'june',
+                                      'july', 'august', 'september', 'october', 'november', 'december']
+                        month = month_names.index(month_match.group(1)) + 1
+                        year = today.year
+                        target_date = datetime(year, month, day).date()
+                        if target_date > today:
+                            target_date = datetime(year - 1, month, day).date()
+                    else:
+                        # Default to today if can't parse
+                        target_date = today
+
+            # Search for conversations on that date
+            start_datetime = datetime.combine(target_date, datetime.min.time())
+            end_datetime = datetime.combine(target_date, datetime.max.time())
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "database.py:search_conversations_by_date:query_params", "message": "Date search query parameters", "data": {"query": date_str, "parsed_date": target_date.isoformat(), "start": start_datetime.isoformat(), "end": end_datetime.isoformat(), "limit": limit}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+
+            cursor = self.conn.execute(
+                """SELECT * FROM conversations
+                   WHERE timestamp >= ? AND timestamp <= ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (start_datetime.isoformat(), end_datetime.isoformat(), limit)
+            )
+            messages = [dict(row) for row in cursor.fetchall()]
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    sample_timestamps = [m.get('timestamp', '')[:19] for m in messages[:5]] if messages else []
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "database.py:search_conversations_by_date:results", "message": "Date search results", "data": {"query": date_str, "result_count": len(messages), "sample_timestamps": sample_timestamps}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            return list(reversed(messages))
+
+        except Exception as e:
+            logger.error(f"Error searching conversations by date: {e}")
+            return []
+
+    def search_conversations_by_topic(self, topic: str, api_key: str, limit: int = 20, threshold: float = 0.7) -> List[Dict]:
+        """Search conversations by topic using embeddings.
+
+        Args:
+            topic: Topic to search for (e.g., "AI glasses")
+            api_key: Gemini API key for generating embeddings
+            limit: Maximum number of results
+            threshold: Minimum similarity threshold (0.0 to 1.0)
+
+        Returns:
+            List of conversation dictionaries sorted by relevance
+        """
+        try:
+            # Generate embedding for topic
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "database.py:search_conversations_by_topic:entry", "message": "Topic search started", "data": {"topic": topic, "limit": limit, "threshold": threshold}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            topic_embedding_json = self.generate_embedding(topic, api_key)
+            if not topic_embedding_json:
+                logger.warning("Failed to generate embedding for topic")
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "database.py:search_conversations_by_topic:embedding_failed", "message": "Embedding generation failed", "data": {"topic": topic}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
+                return []
+
+            topic_embedding = json.loads(topic_embedding_json)
+            if isinstance(topic_embedding, dict) and 'values' in topic_embedding:
+                topic_embedding = topic_embedding['values']
+
+            # Get all conversations with embeddings
+            cursor = self.conn.execute(
+                "SELECT * FROM conversations WHERE embedding IS NOT NULL"
+            )
+            conversations = [dict(row) for row in cursor.fetchall()]
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "database.py:search_conversations_by_topic:conversations_found", "message": "Conversations with embeddings", "data": {"topic": topic, "conversations_with_embeddings": len(conversations), "total_conversations": len(conversations)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+
+            # Calculate similarity for each conversation
+            results = []
+            for conv in conversations:
+                try:
+                    conv_embedding_json = conv.get('embedding')
+                    if not conv_embedding_json:
+                        continue
+
+                    conv_embedding = json.loads(conv_embedding_json)
+                    if isinstance(conv_embedding, dict) and 'values' in conv_embedding:
+                        conv_embedding = conv_embedding['values']
+
+                    # Calculate cosine similarity
+                    similarity = self._cosine_similarity(topic_embedding, conv_embedding)
+                    if similarity >= threshold:
+                        conv_copy = conv.copy()
+                        conv_copy['similarity'] = similarity
+                        results.append(conv_copy)
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for conversation {conv.get('id')}: {e}")
+                    continue
+
+            # Sort by similarity (highest first)
+            results.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+            return results[:limit]
+
+        except Exception as e:
+            logger.error(f"Error searching conversations by topic: {e}")
+            return []
+
+    def search_conversations_by_similarity(self, query_text: str, api_key: str, limit: int = 20, threshold: float = 0.7) -> List[Dict]:
+        """Search conversations by semantic similarity using embeddings.
+
+        Args:
+            query_text: Query text to find similar conversations
+            api_key: Gemini API key for generating embeddings
+            limit: Maximum number of results
+            threshold: Minimum similarity threshold (0.0 to 1.0)
+
+        Returns:
+            List of conversation dictionaries sorted by similarity
+        """
+        # This is essentially the same as search_conversations_by_topic
+        return self.search_conversations_by_topic(query_text, api_key, limit, threshold)
+
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors.
+
+        Args:
+            vec1: First vector
+            vec2: Second vector
+
+        Returns:
+            Cosine similarity score (0.0 to 1.0)
+        """
+        try:
+            import math
+
+            if len(vec1) != len(vec2):
+                logger.warning(f"Vector length mismatch: {len(vec1)} vs {len(vec2)}")
+                return 0.0
+
+            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            magnitude1 = math.sqrt(sum(a * a for a in vec1))
+            magnitude2 = math.sqrt(sum(a * a for a in vec2))
+
+            if magnitude1 == 0 or magnitude2 == 0:
+                return 0.0
+
+            return dot_product / (magnitude1 * magnitude2)
+        except Exception as e:
+            logger.error(f"Error calculating cosine similarity: {e}")
+            return 0.0
 
     # ==================== CALL GOALS ====================
 
@@ -1275,6 +1535,152 @@ class Database:
                SET session_id = ?
                WHERE message_id = ?""",
             (session_id, message_id)
+        )
+        self.conn.commit()
+
+    # ==================== EMBEDDINGS ====================
+
+    def generate_embedding(self, text: str, api_key: str) -> Optional[str]:
+        """Generate embedding for text using Gemini embeddings API.
+
+        Args:
+            text: Text to generate embedding for
+            api_key: Gemini API key
+
+        Returns:
+            JSON string of embedding vector, or None if generation fails
+        """
+        try:
+            from google import genai
+            import asyncio
+
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=api_key
+            )
+
+            # Use Gemini embeddings model
+            # Try to use async method if available, otherwise sync
+            try:
+                # Check if we're in an async context
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in async context, but this is a sync method
+                    # We'll need to handle this differently
+                    # For now, use sync approach
+                    result = client.models.embed_content(
+                        model="models/text-embedding-004",
+                        contents=[text]
+                    )
+                else:
+                    # No running loop, can use async
+                    result = asyncio.run(client.aio.models.embed_content(
+                        model="models/text-embedding-004",
+                        contents=[text]
+                    ))
+            except RuntimeError:
+                # No event loop, use sync
+                result = client.models.embed_content(
+                    model="models/text-embedding-004",
+                    contents=[text]
+                )
+
+            # Extract embedding from result
+            if result and hasattr(result, 'embeddings') and result.embeddings:
+                # Result has embeddings list
+                embedding = result.embeddings[0]
+                if hasattr(embedding, 'values'):
+                    return json.dumps(embedding.values)
+                elif isinstance(embedding, (list, tuple)):
+                    return json.dumps(list(embedding))
+                else:
+                    return json.dumps(embedding)
+            elif result and hasattr(result, 'embedding'):
+                embedding = result.embedding
+                if hasattr(embedding, 'values'):
+                    return json.dumps(embedding.values)
+                else:
+                    return json.dumps(embedding)
+            elif result and isinstance(result, dict):
+                if 'embeddings' in result and result['embeddings']:
+                    embedding = result['embeddings'][0]
+                    return json.dumps(embedding.get('values', embedding) if isinstance(embedding, dict) else embedding)
+                elif 'embedding' in result:
+                    embedding = result['embedding']
+                    return json.dumps(embedding.get('values', embedding) if isinstance(embedding, dict) else embedding)
+            else:
+                logger.warning("Embedding generation returned unexpected format")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            return None
+
+    async def generate_embedding_async(self, text: str, api_key: str) -> Optional[str]:
+        """Generate embedding for text using Gemini embeddings API (async version).
+
+        Args:
+            text: Text to generate embedding for
+            api_key: Gemini API key
+
+        Returns:
+            JSON string of embedding vector, or None if generation fails
+        """
+        try:
+            from google import genai
+
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=api_key
+            )
+
+            # Use Gemini embeddings model
+            result = await client.aio.models.embed_content(
+                model="models/text-embedding-004",
+                contents=[text]
+            )
+
+            # Extract embedding from result
+            if result and hasattr(result, 'embeddings') and result.embeddings:
+                # Result has embeddings list
+                embedding = result.embeddings[0]
+                if hasattr(embedding, 'values'):
+                    return json.dumps(embedding.values)
+                elif isinstance(embedding, (list, tuple)):
+                    return json.dumps(list(embedding))
+                else:
+                    return json.dumps(embedding)
+            elif result and hasattr(result, 'embedding'):
+                embedding = result.embedding
+                if hasattr(embedding, 'values'):
+                    return json.dumps(embedding.values)
+                else:
+                    return json.dumps(embedding)
+            elif result and isinstance(result, dict):
+                if 'embeddings' in result and result['embeddings']:
+                    embedding = result['embeddings'][0]
+                    return json.dumps(embedding.get('values', embedding) if isinstance(embedding, dict) else embedding)
+                elif 'embedding' in result:
+                    embedding = result['embedding']
+                    return json.dumps(embedding.get('values', embedding) if isinstance(embedding, dict) else embedding)
+            else:
+                logger.warning("Embedding generation returned unexpected format")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            return None
+
+    def update_conversation_embedding(self, message_id: int, embedding: str):
+        """Update embedding for a conversation message.
+
+        Args:
+            message_id: Conversation message ID
+            embedding: JSON string of embedding vector
+        """
+        self.conn.execute(
+            "UPDATE conversations SET embedding = ? WHERE id = ?",
+            (embedding, message_id)
         )
         self.conn.commit()
 

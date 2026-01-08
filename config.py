@@ -109,6 +109,13 @@ class Config:
     ENABLE_APPROVAL_REQUESTS = os.getenv('ENABLE_APPROVAL_REQUESTS', 'true').lower() == 'true'
     APPROVAL_TIMEOUT_MINUTES = int(os.getenv('APPROVAL_TIMEOUT_MINUTES', '5'))  # Minutes until timeout
 
+    # Long Message Auto-Routing Configuration
+    LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))  # Characters threshold for auto-email routing
+    AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'  # Enable auto-routing long messages to email
+
+    # Conversation Search Configuration
+    CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'  # Enable conversation search features
+
     @classmethod
     def validate(cls):
         """Validate that required configuration is present."""
@@ -175,5 +182,8 @@ class Config:
         cls.ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'true').lower() == 'true'
         cls.ENABLE_FUNCTION_CALLING = os.getenv('ENABLE_FUNCTION_CALLING', 'true').lower() == 'true'
         cls.LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+        cls.LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))
+        cls.AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'
+        cls.CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'
 
         return True

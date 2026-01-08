@@ -641,12 +641,31 @@ class ContactsAgent(SubAgent):
 
         elif action == "list":
             contacts = self.db.get_contacts()
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "sub_agents_tars.py:ContactsAgent:list", "message": "List contacts called", "data": {"contact_count": len(contacts), "contact_names": [c['name'] for c in contacts]}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             if not contacts:
                 return "You have no contacts saved, sir."
 
-            lines = ["Your contacts, sir:"]
+            lines = ["Your contacts with all information, sir:"]
             for c in contacts:
-                lines.append(f"- {c['name']} ({c['relation']})")
+                contact_parts = [f"**{c['name']}**"]
+                if c.get('relation'):
+                    contact_parts.append(f"Relationship: {c['relation']}")
+                if c.get('phone'):
+                    contact_parts.append(f"Phone number: {c['phone']}")
+                if c.get('email'):
+                    contact_parts.append(f"Email address: {c['email']}")
+                if c.get('birthday'):
+                    contact_parts.append(f"Birthday: {c['birthday']}")
+                if c.get('notes'):
+                    contact_parts.append(f"Notes: {c['notes']}")
+                lines.append(f"*   {', '.join(contact_parts)}")
             return "\n".join(lines)
 
         elif action == "birthday_check":
@@ -670,6 +689,9 @@ class ContactsAgent(SubAgent):
 
         elif action == "edit":
             return await self._edit_contact(args)
+
+        elif action == "delete":
+            return await self._delete_contact(args)
 
         else:
             return f"Unknown contact action: {action}"
@@ -773,6 +795,25 @@ class ContactsAgent(SubAgent):
 
         return f"{get_text('contact_updated')}: {old_name}"
 
+    async def _delete_contact(self, args: Dict[str, Any]) -> str:
+        """Delete a contact."""
+        name = args.get("name", "")
+        if not name:
+            return "Please provide a contact name to delete, sir."
+
+        # Find contact by name
+        contact = self.db.search_contact(name)
+        if not contact:
+            return f"{get_text('contact_not_found')}: {name}"
+
+        # Delete contact
+        success = self.db.delete_contact(contact['id'])
+        if success:
+            logger.info(f"Deleted contact {contact['id']}: {name}")
+            return f"Contact '{name}' has been deleted, sir."
+        else:
+            return f"Failed to delete contact '{name}', sir."
+
     def _format_birthday(self, birthday_str: str) -> str:
         """Format birthday string nicely."""
         try:
@@ -783,12 +824,12 @@ class ContactsAgent(SubAgent):
 
 
 class MessageAgent(SubAgent):
-    """Agent for sending SMS and WhatsApp messages to the user."""
+    """Agent for sending SMS and WhatsApp messages and links to the user."""
 
     def __init__(self, messaging_handler):
         super().__init__(
             name="message_agent",
-            description="Sends SMS/WhatsApp messages and links to the user"
+            description="Sends SMS/WhatsApp messages and links to the user. Supports contact names and phone numbers."
         )
         self.messaging_handler = messaging_handler
 
@@ -797,37 +838,76 @@ class MessageAgent(SubAgent):
 
         Args:
             args: {
-                "action": "send" or "send_link",
+                "action": "send" or "send_link" (optional - if url provided, treats as send_link),
                 "message": str (message text or link description),
-                "link": str (URL for send_link action),
+                "url": str (optional URL to send as link - combines send_message and send_link),
+                "link": str (deprecated - use url instead),
+                "to": str (optional - contact name or phone number, defaults to TARGET_PHONE_NUMBER),
                 "medium": "gmail", "sms", or "whatsapp" (defaults to "gmail")
             }
         """
         action = args.get("action", "send")
         message = args.get("message", "")
-        link = args.get("link", "")
-        # Default to gmail since we're using Gmail platform
+        url = args.get("url") or args.get("link", "")  # Support both url and link for backward compatibility
+        to_recipient = args.get("to", Config.TARGET_PHONE_NUMBER)
         medium = args.get("medium", "gmail")
 
-        logger.info(f"MessageAgent: {action} via {medium}")
+        logger.info(f"MessageAgent: {action} via {medium} to {to_recipient}")
 
-        if action == "send_link":
-            # Send a link with optional description
-            self.messaging_handler.send_link(
-                to_number=Config.TARGET_PHONE_NUMBER,
-                url=link,
-                description=message,
-                medium=medium
+        # If url is provided, treat as link sending (combines send_message and send_link)
+        if url:
+            self.messaging_handler.send_message(
+                to_number=to_recipient,
+                message_body=message,
+                medium=medium,
+                url=url
             )
             return f"Link sent via {medium}, sir."
         else:
             # Send regular message
             self.messaging_handler.send_message(
-                to_number=Config.TARGET_PHONE_NUMBER,
+                to_number=to_recipient,
                 message_body=message,
                 medium=medium
             )
             return f"Message sent via {medium}, sir."
+
+
+class EmailAgent(SubAgent):
+    """Agent for sending emails to contacts or email addresses."""
+
+    def __init__(self, messaging_handler):
+        super().__init__(
+            name="email_agent",
+            description="Sends emails to contacts or email addresses"
+        )
+        self.messaging_handler = messaging_handler
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Handle email sending request.
+
+        Args:
+            args: {
+                "to": str (contact name or email address),
+                "subject": str (email subject),
+                "body": str (email body)
+            }
+        """
+        to_email = args.get("to", "")
+        subject = args.get("subject", "TARS Message")
+        body = args.get("body", "")
+
+        if not to_email:
+            return "Please provide a recipient (contact name or email address), sir."
+
+        if not body:
+            return "Please provide email body content, sir."
+
+        result = self.messaging_handler.send_email(to_email, subject, body)
+        if result:
+            return f"Email sent to {to_email}, sir."
+        else:
+            return f"Failed to send email to {to_email}, sir."
 
 
 class NotificationAgent(SubAgent):
@@ -1087,30 +1167,125 @@ class InterSessionAgent(SubAgent):
         elif action == "request_confirmation":
             return await self._request_confirmation(args)
         elif action == "broadcast":
-            return await self._broadcast_with_approval(args)
+            # Broadcast is now handled by _send_message
+            return await self._send_message(args)
         elif action == "list_sessions":
             return await self._list_sessions(args)
         elif action == "take_message":
-            return await self._take_message(args)
+            # Take message is now handled by _send_message
+            return await self._send_message(args)
         elif action == "schedule_callback":
             return await self._schedule_callback(args)
         elif action == "hangup":
             return await self._hangup_call(args)
+        elif action == "get_session_info":
+            return await self._get_session_info(args)
+        elif action == "suspend_session":
+            return await self._suspend_session(args)
+        elif action == "resume_session":
+            return await self._resume_session(args)
         else:
             return f"Unknown action: {action}"
 
     async def _send_message(self, args: Dict[str, Any]) -> str:
-        """Send message to specific session"""
+        """Send message to specific session, user, or broadcast to multiple sessions.
+        
+        Unified function that handles:
+        - Direct messages to specific sessions (target_session_name)
+        - Taking messages for Máté (target="user" or take_message action)
+        - Broadcasting to multiple sessions (target_sessions as list or comma-separated)
+        """
         if not self.router or not self.session_manager:
             return "Inter-session communication not available, sir."
 
-        target = args.get("target_session_name")
+        # Support multiple ways to specify target
+        target = args.get("target_session_name") or args.get("target")
+        target_sessions = args.get("target_sessions", "")
         message = args.get("message")
         message_type = args.get("message_type", "direct")
         context = args.get("context", "")
+        action = args.get("action", "send_message")
+        
+        # Handle take_message action - route to user
+        if action == "take_message" or args.get("take_message", False):
+            caller_name = args.get("caller_name", "Unknown caller")
+            callback_requested = args.get("callback_requested", False)
+            
+            if not message:
+                return "Please provide a message."
+            
+            source_session = args.get('_source_session')
+            formatted_msg = f"Message from {caller_name}: {message}"
+            if callback_requested:
+                formatted_msg += f"\n(Caller requested a callback)"
+            
+            await self.router.route_message(
+                from_session=source_session,
+                message=formatted_msg,
+                target="user",
+                message_type="notification"
+            )
+            return f"I've relayed your message to {Config.TARGET_NAME}. He'll get back to you soon."
 
-        if not target or not message:
-            return "Please provide target_session_name and message, sir."
+        # Handle broadcast action
+        if action == "broadcast" or target_sessions:
+            if not message:
+                return "Please provide a message to broadcast, sir."
+            
+            source_session = args.get('_source_session')
+            session_group = args.get("session_group", "default")
+            
+            # Check if this group already approved
+            approval = self.db.get_broadcast_approval(session_group) if self.db else None
+            
+            if not approval or approval['approved'] == 0:
+                # First time - ask user for permission
+                question = f"I'd like to share this information with all {session_group} sessions: '{message}'. Should I broadcast this?"
+                
+                await self.router.route_message(
+                    from_session=source_session,
+                    message=question,
+                    target="user",
+                    message_type="broadcast_approval_request",
+                    context={"session_group": session_group, "message": message}
+                )
+                
+                # Store pending approval
+                if self.db and not approval:
+                    self.db.add_broadcast_approval(session_group, approved=0)
+                
+                return f"Requesting permission from Máté to broadcast to {session_group} sessions, sir..."
+            
+            elif approval['approved'] == 1:
+                # Already approved - go ahead
+                if isinstance(target_sessions, str):
+                    session_list = [s.strip() for s in target_sessions.split(",") if s.strip()]
+                elif isinstance(target_sessions, list):
+                    session_list = target_sessions
+                else:
+                    session_list = []
+                
+                await self.router.route_message(
+                    from_session=source_session,
+                    message=message,
+                    target=session_list if session_list else "user",
+                    message_type="broadcast",
+                    context={"session_group": session_group}
+                )
+                
+                return f"Message broadcasted to {len(session_list)} sessions, sir."
+            
+            else:
+                return "Broadcast permission was denied by Máté, sir."
+
+        # Default: send to specific session or user
+        if not target:
+            # If no target specified, default to user (take_message behavior)
+            target = "user"
+            message_type = "notification"
+        
+        if not message:
+            return "Please provide a message, sir."
 
         # Get source session (injected by SessionManager wrapper)
         source_session = args.get('_source_session')
@@ -1153,57 +1328,6 @@ class InterSessionAgent(SubAgent):
 
         return "Confirmation request sent to Máté, sir. Awaiting response."
 
-    async def _broadcast_with_approval(self, args: Dict[str, Any]) -> str:
-        """Broadcast with hybrid approval mode"""
-        if not self.router or not self.db:
-            return "Broadcast not available, sir."
-
-        target_sessions = args.get("target_sessions", "")
-        message = args.get("message")
-        session_group = args.get("session_group", "default")
-
-        if not message:
-            return "Please provide a message to broadcast, sir."
-
-        source_session = args.get('_source_session')
-
-        # Check if this group already approved
-        approval = self.db.get_broadcast_approval(session_group)
-
-        if not approval or approval['approved'] == 0:
-            # First time - ask user for permission
-            question = f"I'd like to share this information with all {session_group} sessions: '{message}'. Should I broadcast this?"
-
-            await self.router.route_message(
-                from_session=source_session,
-                message=question,
-                target="user",
-                message_type="broadcast_approval_request",
-                context={"session_group": session_group, "message": message}
-            )
-
-            # Store pending approval
-            if not approval:
-                self.db.add_broadcast_approval(session_group, approved=0)
-
-            return f"Requesting permission from Máté to broadcast to {session_group} sessions, sir..."
-
-        elif approval['approved'] == 1:
-            # Already approved - go ahead
-            session_list = [s.strip() for s in target_sessions.split(",")]
-
-            await self.router.route_message(
-                from_session=source_session,
-                message=message,
-                target=session_list,
-                message_type="broadcast",
-                context={"session_group": session_group}
-            )
-
-            return f"Message broadcasted to {len(session_list)} sessions, sir."
-
-        else:
-            return "Broadcast permission was denied by Máté, sir."
 
     async def _list_sessions(self, args: Dict[str, Any]) -> str:
         """List active sessions"""
@@ -1240,33 +1364,73 @@ class InterSessionAgent(SubAgent):
 
         return f"Active sessions ({len(sessions)}):\n" + "\n".join(session_list)
 
-    async def _take_message(self, args: Dict[str, Any]) -> str:
-        """Take message for Máté (limited access function)"""
-        if not self.router:
-            return "Messaging not available at the moment."
 
-        caller_name = args.get("caller_name", "Unknown caller")
-        message = args.get("message")
-        callback_requested = args.get("callback_requested", False)
-
-        if not message:
-            return "Please provide a message."
-
-        source_session = args.get('_source_session')
-
-        # Format message for Máté
-        formatted_msg = f"Message from {caller_name}: {message}"
-        if callback_requested:
-            formatted_msg += f"\n(Caller requested a callback)"
-
-        await self.router.route_message(
-            from_session=source_session,
-            message=formatted_msg,
-            target="user",
-            message_type="notification"
-        )
-
-        return f"I've relayed your message to {Config.TARGET_NAME}. He'll get back to you soon."
+    def _parse_vague_callback_time(self, time_str: str) -> Optional[datetime]:
+        """Parse vague callback time expressions into specific datetime.
+        
+        Handles:
+        - "in the morning" → 8am today (or tomorrow if morning has passed)
+        - "as soon as you see it" → 5 minutes from now
+        - "this afternoon" → 2pm today
+        - "this evening" → 6pm today
+        - "tonight" → 7pm today
+        - Regular times like "3pm", "tomorrow at 8am", etc.
+        
+        Returns:
+            Parsed datetime or None if parsing fails
+        """
+        time_str_lower = time_str.lower().strip()
+        now = datetime.now()
+        
+        # Handle vague time expressions
+        if "as soon as you see it" in time_str_lower or "as soon as possible" in time_str_lower or "asap" in time_str_lower:
+            # 5 minutes from now
+            return now + timedelta(minutes=5)
+        
+        if "in the morning" in time_str_lower or "this morning" in time_str_lower:
+            # 8am today or tomorrow
+            target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+            if target < now:
+                target += timedelta(days=1)
+            return target
+        
+        if "this afternoon" in time_str_lower or "in the afternoon" in time_str_lower:
+            # 2pm today
+            target = now.replace(hour=14, minute=0, second=0, microsecond=0)
+            if target < now:
+                target += timedelta(days=1)
+            return target
+        
+        if "this evening" in time_str_lower or "in the evening" in time_str_lower or "tonight" in time_str_lower:
+            # 6pm today (or 7pm for tonight)
+            hour = 19 if "tonight" in time_str_lower else 18
+            target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+            if target < now:
+                target += timedelta(days=1)
+            return target
+        
+        # Try to use ReminderAgent's _parse_time logic for regular times
+        # Create a temporary ReminderAgent instance to use its parsing
+        try:
+            from sub_agents_tars import ReminderAgent
+            temp_reminder = ReminderAgent(self.db)
+            parsed = temp_reminder._parse_time(time_str)
+            if parsed and 'datetime' in parsed:
+                return parsed['datetime']
+        except:
+            pass
+        
+        # Fallback: try dateutil parser
+        try:
+            from dateutil import parser
+            parsed_dt = parser.parse(time_str, fuzzy=True, default=now)
+            if parsed_dt < now:
+                parsed_dt += timedelta(days=1)
+            return parsed_dt
+        except:
+            pass
+        
+        return None
 
     async def _schedule_callback(self, args: Dict[str, Any]) -> str:
         """Schedule callback for limited access caller"""
@@ -1280,27 +1444,33 @@ class InterSessionAgent(SubAgent):
         # Create a reminder for Máté to call back
         if self.db:
             try:
-                try:
-                    from dateutil import parser
-                except ImportError:
-                    logger.error(
-                        "CRITICAL: 'python-dateutil' is not installed. Please run 'pip install python-dateutil'. Falling back to a simple reminder.")
-                    # Fallback if dateutil is not installed
-                    reminder_title = f"Call back {caller_name} ({callback_time}) about: {reason}"
-                    # Schedule for 1 hour from now as a simple fallback
-                    callback_dt = datetime.now() + timedelta(hours=1)
-                    self.db.add_reminder(
-                        title=reminder_title,
-                        datetime_str=callback_dt.isoformat()
-                    )
-                    return f"I've noted your callback request for {callback_time}. {Config.TARGET_NAME} will get back to you."
-
-                # Parse time using dateutil
-                callback_dt = parser.parse(
-                    callback_time, fuzzy=True, default=datetime.now())
-                # If parsed date is in the past, assume it's for tomorrow
-                if callback_dt < datetime.now():
-                    callback_dt += timedelta(days=1)
+                # Try to parse vague times first
+                callback_dt = self._parse_vague_callback_time(callback_time)
+                
+                if not callback_dt:
+                    # Fallback to dateutil if vague parsing fails
+                    try:
+                        from dateutil import parser
+                        callback_dt = parser.parse(
+                            callback_time, fuzzy=True, default=datetime.now())
+                        # If parsed date is in the past, assume it's for tomorrow
+                        if callback_dt < datetime.now():
+                            callback_dt += timedelta(days=1)
+                    except ImportError:
+                        logger.error(
+                            "CRITICAL: 'python-dateutil' is not installed. Please run 'pip install python-dateutil'. Falling back to a simple reminder.")
+                        # Fallback if dateutil is not installed
+                        reminder_title = f"Call back {caller_name} ({callback_time}) about: {reason}"
+                        # Schedule for 1 hour from now as a simple fallback
+                        callback_dt = datetime.now() + timedelta(hours=1)
+                        self.db.add_reminder(
+                            title=reminder_title,
+                            datetime_str=callback_dt.isoformat()
+                        )
+                        return f"I've noted your callback request for {callback_time}. {Config.TARGET_NAME} will get back to you."
+                    except Exception as e:
+                        logger.error(f"Error parsing callback time: {e}")
+                        return f"I've noted your callback request for {callback_time}. {Config.TARGET_NAME} will get back to you."
 
                 reminder_title = f"Call back {caller_name}: {reason}"
 
@@ -1383,6 +1553,170 @@ class InterSessionAgent(SubAgent):
         else:
             return f"I was unable to terminate the call with '{target_session.session_name}' due to an error."
 
+    async def _get_session_info(self, args: Dict[str, Any]) -> str:
+        """Get detailed information about a session."""
+        if not self.session_manager:
+            return "Session management not available, sir."
+
+        session_id = args.get("session_id")
+        session_name = args.get("session_name")
+
+        if not session_id and not session_name:
+            return "Please provide session_id or session_name, sir."
+
+        info = await self.session_manager.get_session_info(
+            session_id=session_id,
+            session_name=session_name
+        )
+
+        if not info:
+            return f"Session not found: {session_id or session_name}, sir."
+
+        # Format response
+        lines = [f"Session Information for '{info['session_name']}':"]
+        lines.append(f"  Status: {info['status']} ({'Active' if info['is_active'] else 'Inactive'})")
+        lines.append(f"  Type: {info['session_type']}")
+        lines.append(f"  Permission: {info['permission_level']}")
+        lines.append(f"  Phone: {info['phone_number']}")
+        lines.append(f"  Messages: {info['message_count']}")
+        if info.get('purpose'):
+            lines.append(f"  Purpose: {info['purpose']}")
+        if info.get('created_at'):
+            lines.append(f"  Created: {info['created_at']}")
+
+        return "\n".join(lines)
+
+    async def _suspend_session(self, args: Dict[str, Any]) -> str:
+        """Suspend a session for later resumption."""
+        if not self.session_manager:
+            return "Session management not available, sir."
+
+        session_id = args.get("session_id")
+        session_name = args.get("session_name")
+        reason = args.get("reason", "user_request")
+
+        if not session_id and not session_name:
+            return "Please provide session_id or session_name, sir."
+
+        success = await self.session_manager.suspend_session(
+            session_id=session_id,
+            session_name=session_name,
+            reason=reason
+        )
+
+        if success:
+            target = session_id or session_name
+            return f"Session '{target}' has been suspended, sir."
+        else:
+            return f"Failed to suspend session '{session_id or session_name}', sir. It may not be active or may not exist."
+
+    async def _resume_session(self, args: Dict[str, Any]) -> str:
+        """Resume a suspended session."""
+        if not self.session_manager:
+            return "Session management not available, sir."
+
+        session_id = args.get("session_id")
+        session_name = args.get("session_name")
+
+        if not session_id and not session_name:
+            return "Please provide session_id or session_name, sir."
+
+        # Note: For full resumption with new connection, call_sid, websocket, and stream_sid would be needed
+        # This is a simplified version that just marks the session as active
+        session = await self.session_manager.resume_session(
+            session_id=session_id,
+            session_name=session_name
+        )
+
+        if session:
+            return f"Session '{session.session_name}' has been resumed, sir."
+        else:
+            return f"Failed to resume session '{session_id or session_name}', sir. It may not be suspended or may not exist."
+
+
+class ConversationSearchAgent(SubAgent):
+    """Handles conversation search by date, topic, and similarity."""
+
+    def __init__(self, db: Database):
+        super().__init__(
+            name="conversation_search",
+            description="Search conversations by date, topic, or similarity"
+        )
+        self.db = db
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute conversation search operation.
+
+        Args:
+            args: {
+                "action": "search_by_date|search_by_topic|search_by_similarity",
+                "query": str (date string, topic, or search query),
+                "limit": int (optional, default: 20)
+            }
+        """
+        action = args.get("action", "search_by_date")
+        query = args.get("query", "")
+        limit = args.get("limit", 20)
+
+        if not query:
+            return "Please provide a search query, sir."
+
+        from config import Config
+
+        if action == "search_by_date":
+            results = self.db.search_conversations_by_date(query, limit=limit)
+            if not results:
+                return f"No conversations found for date: {query}, sir."
+            
+            lines = [f"Found {len(results)} conversations for {query}:"]
+            for conv in results[:10]:  # Show first 10
+                timestamp = conv.get('timestamp', '')
+                sender = conv.get('sender', 'unknown')
+                message_preview = conv.get('message', '')[:100]
+                lines.append(f"  [{timestamp}] {sender}: {message_preview}...")
+            return "\n".join(lines)
+
+        elif action == "search_by_topic":
+            if not Config.GEMINI_API_KEY:
+                return "Conversation search by topic requires Gemini API key, sir."
+            
+            results = self.db.search_conversations_by_topic(
+                query, Config.GEMINI_API_KEY, limit=limit
+            )
+            if not results:
+                return f"No conversations found for topic: {query}, sir."
+            
+            lines = [f"Found {len(results)} conversations about '{query}':"]
+            for conv in results[:10]:  # Show first 10
+                similarity = conv.get('similarity', 0)
+                timestamp = conv.get('timestamp', '')
+                sender = conv.get('sender', 'unknown')
+                message_preview = conv.get('message', '')[:100]
+                lines.append(f"  [{timestamp}] {sender}: {message_preview}... (similarity: {similarity:.2f})")
+            return "\n".join(lines)
+
+        elif action == "search_by_similarity":
+            if not Config.GEMINI_API_KEY:
+                return "Conversation search by similarity requires Gemini API key, sir."
+            
+            results = self.db.search_conversations_by_similarity(
+                query, Config.GEMINI_API_KEY, limit=limit
+            )
+            if not results:
+                return f"No similar conversations found for: {query}, sir."
+            
+            lines = [f"Found {len(results)} similar conversations to '{query}':"]
+            for conv in results[:10]:  # Show first 10
+                similarity = conv.get('similarity', 0)
+                timestamp = conv.get('timestamp', '')
+                sender = conv.get('sender', 'unknown')
+                message_preview = conv.get('message', '')[:100]
+                lines.append(f"  [{timestamp}] {sender}: {message_preview}... (similarity: {similarity:.2f})")
+            return "\n".join(lines)
+
+        else:
+            return f"Unknown search action: {action}"
+
 
 class MessagingAgent(SubAgent):
     """Handles messaging operations and platform transitions."""
@@ -1402,14 +1736,9 @@ class MessagingAgent(SubAgent):
         Args:
             args: {
                 "action": "send_link|suggest_call|send_snapshot",
-                OR for send_link_to_user: {"url": str, "description": str}
                 ... (action-specific parameters)
             }
         """
-        # Handle send_link_to_user function (no action parameter, just url/description)
-        if "url" in args and "action" not in args:
-            return await self._send_link(args)
-        
         action = args.get("action", "send_link")
 
         if action == "send_link":
@@ -1509,11 +1838,13 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
         "reminder": ReminderAgent(db),
         "contacts": ContactsAgent(db),
         "notification": NotificationAgent(),
+        "conversation_search": ConversationSearchAgent(db),
     }
 
     # Add message agent if messaging_handler is provided
     if messaging_handler:
         agents["message"] = MessageAgent(messaging_handler)
+        agents["email"] = EmailAgent(messaging_handler)
 
     # Add outbound call agent if twilio_handler is provided
     if twilio_handler:
@@ -1601,13 +1932,13 @@ def get_function_declarations() -> list:
         },
         {
             "name": "lookup_contact",
-            "description": "Look up, add, edit, or manage family and friends contact information including phone numbers, email addresses, birthdays, relationships, and bio. Examples: 'what is Helen's email', 'add a new contact', 'edit contact information', 'add bio for John'",
+            "description": "CRITICAL: You MUST call this function to look up, add, edit, delete, or list contacts. NEVER rely on conversation history for contact information - always call this function to get current data from the database. Examples: 'what is Helen's email' → call with action='lookup', 'list all contacts' → call with action='list', 'add a new contact' → call with action='add'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: lookup (find specific contact), list (all contacts), birthday_check (check today's birthdays), add (create new contact), or edit (update existing contact)"
+                        "description": "Action: lookup (find specific contact), list (all contacts - ALWAYS call this, never use conversation history), birthday_check (check today's birthdays), add (create new contact), edit (update existing contact), or delete (remove contact)"
                     },
                     "name": {
                         "type": "STRING",
@@ -1673,29 +2004,77 @@ def get_function_declarations() -> list:
             }
         },
         {
-            "name": "send_message",
-            "description": "Send a text message or link to Máté via SMS or WhatsApp. Use this when user requests links during phone calls or to send follow-up information.",
+            "name": "search_conversations",
+            "description": "Search past conversations by date, topic, or similarity. Examples: 'find conversations from last monday', 'search for conversations about AI glasses', 'find similar conversations to this topic'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: 'send' (text message) or 'send_link' (send URL)"
+                        "description": "Action: 'search_by_date' (e.g., 'last monday', 'january 12'), 'search_by_topic' (e.g., 'AI glasses'), or 'search_by_similarity' (semantic similarity search)"
+                    },
+                    "query": {
+                        "type": "STRING",
+                        "description": "Search query: date string (for search_by_date), topic (for search_by_topic), or search text (for search_by_similarity)"
+                    },
+                    "limit": {
+                        "type": "STRING",
+                        "description": "Maximum number of results (optional, default: 20)"
+                    }
+                },
+                "required": ["action", "query"]
+            }
+        },
+        {
+            "name": "send_message",
+            "description": "Send a text message or link via SMS, WhatsApp, or email. Supports contact names and phone numbers. If url is provided, sends as a link. Use this when user requests links during phone calls or to send follow-up information.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'send' (text message) or 'send_link' (send URL). Optional - if url is provided, automatically treats as send_link."
                     },
                     "message": {
                         "type": "STRING",
                         "description": "Message text or link description"
                     },
-                    "link": {
+                    "url": {
                         "type": "STRING",
-                        "description": "URL to send (for send_link action)"
+                        "description": "Optional URL to send as a link (combines send_message and send_link functionality)"
+                    },
+                    "to": {
+                        "type": "STRING",
+                        "description": "Recipient: contact name or phone number (defaults to Máté's number)"
                     },
                     "medium": {
                         "type": "STRING",
-                        "description": "Communication medium: 'sms' or 'whatsapp' (default: sms)"
+                        "description": "Communication medium: 'sms', 'whatsapp', or 'gmail' (default: gmail)"
                     }
                 },
-                "required": ["action", "message"]
+                "required": ["message"]
+            }
+        },
+        {
+            "name": "send_email",
+            "description": "Send an email to a contact or email address. Supports contact names (looks up email from contacts) or direct email addresses.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "to": {
+                        "type": "STRING",
+                        "description": "Recipient: contact name (if email available for contact) or email address"
+                    },
+                    "subject": {
+                        "type": "STRING",
+                        "description": "Email subject line"
+                    },
+                    "body": {
+                        "type": "STRING",
+                        "description": "Email body content"
+                    }
+                },
+                "required": ["to", "body"]
             }
         },
         {
@@ -1747,32 +2126,52 @@ def get_function_declarations() -> list:
         # Inter-session communication functions
         {
             "name": "send_message_to_session",
-            "description": "Send a message to another active agent session (inter-agent communication). Use when you need to communicate with another ongoing call. Examples: 'Tell the Barber Shop call that 7pm works', 'Ask the Máté (main) session if $80/night is acceptable'",
+            "description": "Send a message to another active agent session, take a message for Máté, or broadcast to multiple sessions (unified inter-session communication). Use when you need to communicate with another ongoing call, relay a message from a caller to Máté, or broadcast to multiple sessions. Examples: 'Tell the Barber Shop call that 7pm works', 'Take a message for Máté from John', 'Broadcast to all hotel calls that we got $60/night quote'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: always 'send_message'"
+                        "description": "Action: 'send_message' (to specific session), 'take_message' (relay to Máté), or 'broadcast' (to multiple sessions)"
                     },
                     "target_session_name": {
                         "type": "STRING",
-                        "description": "Name of the target session (e.g., 'Máté (main)', 'Call with Barber Shop', 'Call with Drury Hotel')"
+                        "description": "Name of the target session (e.g., 'Máté (main)', 'Call with Barber Shop'). For take_message, use 'user' or omit. For broadcast, use target_sessions instead."
+                    },
+                    "target": {
+                        "type": "STRING",
+                        "description": "Alternative to target_session_name. Use 'user' to send to Máté (take_message behavior)."
+                    },
+                    "target_sessions": {
+                        "type": "STRING",
+                        "description": "For broadcast: comma-separated list of session names, or 'all' for all active sessions"
                     },
                     "message": {
                         "type": "STRING",
-                        "description": "Message to send to the target session"
+                        "description": "Message to send"
+                    },
+                    "caller_name": {
+                        "type": "STRING",
+                        "description": "For take_message: caller's name"
+                    },
+                    "callback_requested": {
+                        "type": "STRING",
+                        "description": "For take_message: 'true' if caller requested callback"
+                    },
+                    "session_group": {
+                        "type": "STRING",
+                        "description": "For broadcast: group identifier for approval tracking (e.g., 'hotel_negotiations')"
                     },
                     "message_type": {
                         "type": "STRING",
-                        "description": "Type: 'direct' (simple message), 'confirmation_request' (awaiting yes/no), or 'update' (FYI)"
+                        "description": "Type: 'direct' (simple message), 'confirmation_request' (awaiting yes/no), 'update' (FYI), 'notification' (for take_message)"
                     },
                     "context": {
                         "type": "STRING",
                         "description": "Additional context about why you're sending this message"
                     }
                 },
-                "required": ["action", "target_session_name", "message"]
+                "required": ["action", "message"]
             }
         },
         {
@@ -1802,32 +2201,6 @@ def get_function_declarations() -> list:
             }
         },
         {
-            "name": "broadcast_to_sessions",
-            "description": "Send a message to multiple sessions at once (broadcast). Use for coordinating parallel negotiations. For hybrid mode: asks user permission first time per batch. Examples: 'Tell all hotel calls that we got $60/night quote', 'Update all pending sessions that appointment is booked'",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: always 'broadcast'"
-                    },
-                    "target_sessions": {
-                        "type": "STRING",
-                        "description": "Comma-separated list of session names, or 'all' for all active sessions"
-                    },
-                    "message": {
-                        "type": "STRING",
-                        "description": "Message to broadcast"
-                    },
-                    "session_group": {
-                        "type": "STRING",
-                        "description": "Group identifier (e.g., 'hotel_negotiations') for tracking approval"
-                    }
-                },
-                "required": ["action", "target_sessions", "message"]
-            }
-        },
-        {
             "name": "list_active_sessions",
             "description": "List all currently active agent sessions. Use to see what other calls are ongoing. Useful for coordination.",
             "parameters": {
@@ -1843,32 +2216,6 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action"]
-            }
-        },
-        {
-            "name": "take_message_for_mate",
-            "description": "Take a message from unknown caller and relay to Máté. For limited-access sessions only. Use when a caller wants to leave a message.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: always 'take_message'"
-                    },
-                    "caller_name": {
-                        "type": "STRING",
-                        "description": "Caller's name"
-                    },
-                    "message": {
-                        "type": "STRING",
-                        "description": "Message to relay to Máté"
-                    },
-                    "callback_requested": {
-                        "type": "STRING",
-                        "description": "Does caller want callback? 'true' or 'false'"
-                    }
-                },
-                "required": ["action", "message"]
             }
         },
         {
@@ -1916,25 +2263,73 @@ def get_function_declarations() -> list:
             }
         },
         {
-            "name": "send_link_to_user",
-            "description": "Send a URL link to Máté. If he's on a call, sends to Gmail. Otherwise sends via message. Use when you want to share a website, article, or resource.",
+            "name": "get_session_info",
+            "description": "Get detailed information about a session including status, type, message count, and other metadata.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: always 'send_link'"
+                        "description": "Action: always 'get_session_info'"
                     },
-                    "url": {
+                    "session_id": {
                         "type": "STRING",
-                        "description": "The URL to send"
+                        "description": "Session UUID (optional if session_name provided)"
                     },
-                    "description": {
+                    "session_name": {
                         "type": "STRING",
-                        "description": "Optional description of the link"
+                        "description": "Session name (e.g., 'Call with Helen', 'Call with Máté (main)') - optional if session_id provided"
                     }
                 },
-                "required": ["action", "url"]
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "suspend_session",
+            "description": "Suspend a session for later resumption. Saves conversation state so it can be resumed later.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'suspend_session'"
+                    },
+                    "session_id": {
+                        "type": "STRING",
+                        "description": "Session UUID (optional if session_name provided)"
+                    },
+                    "session_name": {
+                        "type": "STRING",
+                        "description": "Session name (e.g., 'Call with Helen') - optional if session_id provided"
+                    },
+                    "reason": {
+                        "type": "STRING",
+                        "description": "Reason for suspension (optional, default: 'user_request')"
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "resume_session",
+            "description": "Resume a previously suspended session. Restores conversation history and reactivates the session.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'resume_session'"
+                    },
+                    "session_id": {
+                        "type": "STRING",
+                        "description": "Session UUID (optional if session_name provided)"
+                    },
+                    "session_name": {
+                        "type": "STRING",
+                        "description": "Session name (e.g., 'Call with Helen') - optional if session_id provided"
+                    }
+                },
+                "required": ["action"]
             }
         },
         {

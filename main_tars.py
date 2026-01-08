@@ -196,19 +196,21 @@ class TARSPhoneAgent:
             "manage_reminder": agents["reminder"],
             "lookup_contact": agents["contacts"],
             "send_notification": agents["notification"],
+            "search_conversations": agents.get("conversation_search"),
             # May be None if messaging not available
             "send_message": agents.get("message"),
-            "send_link_to_user": agents.get("messaging"),  # Register send_link_to_user
+            "send_email": agents.get("email"),
             # May be None if twilio not available
             "make_goal_call": agents.get("outbound_call"),
             # InterSessionAgent functions
             "send_message_to_session": agents.get("inter_session"),
             "request_user_confirmation": agents.get("inter_session"),
-            "broadcast_to_sessions": agents.get("inter_session"),
             "list_active_sessions": agents.get("inter_session"),
-            "take_message_for_mate": agents.get("inter_session"),
             "schedule_callback": agents.get("inter_session"),
             "hangup_call": agents.get("inter_session"),
+            "get_session_info": agents.get("inter_session"),
+            "suspend_session": agents.get("inter_session"),
+            "resume_session": agents.get("inter_session"),
         }
 
         for declaration in declarations:

@@ -162,6 +162,9 @@ class MessagingHandler:
             else:
                 # For SMS/WhatsApp, the AI should NOT call send_message function
                 system_instruction += "\n\nIMPORTANT: You are responding via text message. Do NOT call the send_message function unless you are sending a link. Just return your response as text."
+                # Inform about auto-routing for long messages
+                if Config.AUTO_EMAIL_ROUTING:
+                    system_instruction += f"\n\nNOTE: If your response is longer than {Config.LONG_MESSAGE_THRESHOLD} characters, it will automatically be sent via email instead of text message, with a short notification sent via text."
             
             # #region debug log
             try:
@@ -174,11 +177,35 @@ class MessagingHandler:
             
             # Add Google Search availability notice
             system_instruction += "\n\nYou have access to Google Search for real-time information. Use it automatically for queries about current weather, news, stock prices, or any information that requires up-to-date data. Google Search is enabled and will be used automatically when needed."
+            
+            # CRITICAL: Force function calls for database queries
+            system_instruction += "\n\nCRITICAL: When asked about contacts, reminders, or any database information, you MUST call the appropriate function (lookup_contact, manage_reminder, etc.). NEVER use conversation history to answer - always query the database using functions. Conversation history is for context only, not for data retrieval."
 
             # Add context if available
             if context:
                 system_instruction += f"\n\nRecent conversation history:\n{context}"
 
+            # Try to find active Máté session for live session routing
+            mate_session = None
+            if self.session_manager and permission_level == PermissionLevel.FULL:
+                mate_session = await self.session_manager.get_mate_main_session()
+                if mate_session and mate_session.is_active():
+                    # Inject message into live session
+                    logger.info(f"Routing message to active Máté session: {mate_session.session_name}")
+                    try:
+                        await mate_session.gemini_client.session.send(
+                            input=message_body,
+                            end_of_turn=True
+                        )
+                        # Response will come through normal session flow
+                        # No need to send reply here - session will handle it
+                        logger.info(f"Message injected into live session, response will come through session flow")
+                        return
+                    except Exception as e:
+                        logger.error(f"Error injecting message into live session: {e}")
+                        # Fall through to generate_text_response approach
+
+            # No active session or injection failed - use current generate_content approach
             # Generate AI response using Gemini
             # Note: For text-only messaging, we'll use the gemini client's text generation
             # This is a simplified version - in production you might want to use a separate
@@ -199,13 +226,71 @@ class MessagingHandler:
                 pass
             # #endregion
 
-            # Send reply via Twilio
-            self.send_message(
-                to_number=from_number,
-                message_body=response_text,
-                medium=medium,
-                from_number=to_number  # Reply from the same number that received the message
+            # Check if response is long and should be auto-routed to email
+            response_length = len(response_text)
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:process_incoming_message:long_message_check", "message": "Checking long message routing", "data": {"response_length": response_length, "threshold": Config.LONG_MESSAGE_THRESHOLD, "medium": medium, "auto_email_routing": Config.AUTO_EMAIL_ROUTING, "has_gmail_handler": self.gmail_handler is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            should_route_to_email = (
+                Config.AUTO_EMAIL_ROUTING and
+                response_length >= Config.LONG_MESSAGE_THRESHOLD and
+                medium in ['sms', 'whatsapp'] and
+                self.gmail_handler is not None
             )
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:process_incoming_message:routing_decision", "message": "Routing decision made", "data": {"should_route_to_email": should_route_to_email, "reason": "medium_check" if medium not in ['sms', 'whatsapp'] else "length_check" if response_length < Config.LONG_MESSAGE_THRESHOLD else "config_check" if not Config.AUTO_EMAIL_ROUTING else "gmail_handler_check" if not self.gmail_handler else "routing_enabled"}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+
+            if should_route_to_email:
+                # Route long message to email instead
+                logger.info(f"Auto-routing long message ({response_length} chars) to email instead of {medium}")
+                # Get user's email - try to find contact or use TARGET_EMAIL
+                recipient_email = Config.TARGET_EMAIL
+                contact = self.db.search_contact_by_phone(from_number)
+                if contact and contact.get('email'):
+                    recipient_email = contact['email']
+                
+                if recipient_email:
+                    self.gmail_handler.send_email(
+                        to_email=recipient_email,
+                        subject="TARS Response (Long Message)",
+                        body=response_text
+                    )
+                    # Send short notification via original medium
+                    notification = f"I've sent you a detailed response via email ({response_length} characters). Check your inbox."
+                    self.send_message(
+                        to_number=from_number,
+                        message_body=notification,
+                        medium=medium,
+                        from_number=to_number
+                    )
+                else:
+                    # Fallback to original medium if no email available
+                    logger.warning("No email address available for auto-routing, using original medium")
+                    self.send_message(
+                        to_number=from_number,
+                        message_body=response_text,
+                        medium=medium,
+                        from_number=to_number
+                    )
+            else:
+                # Send reply via original medium
+                self.send_message(
+                    to_number=from_number,
+                    message_body=response_text,
+                    medium=medium,
+                    from_number=to_number  # Reply from the same number that received the message
+                )
 
             logger.info(f"Sent {medium} reply to {from_number}")
 
@@ -412,6 +497,14 @@ class MessagingHandler:
         Returns:
             Function result as string
         """
+        # #region debug log
+        try:
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import json
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "messaging_handler.py:_execute_function:entry", "message": "Function execution started", "data": {"function_name": function_name, "args": str(args)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+        except:
+            pass
+        # #endregion
         try:
             from sub_agents_tars import get_all_agents
 
@@ -431,14 +524,17 @@ class MessagingHandler:
                 "lookup_contact": agents["contacts"],
                 "send_notification": agents["notification"],
                 "send_message": agents.get("message"),
+                "send_email": agents.get("email"),
+                "search_conversations": agents.get("conversation_search"),
                 "make_goal_call": agents.get("outbound_call"),
                 "send_message_to_session": agents.get("inter_session"),
                 "request_user_confirmation": agents.get("inter_session"),
-                "broadcast_to_sessions": agents.get("inter_session"),
                 "list_active_sessions": agents.get("inter_session"),
-                "take_message_for_mate": agents.get("inter_session"),
                 "schedule_callback": agents.get("inter_session"),
                 "hangup_call": agents.get("inter_session"),
+                "get_session_info": agents.get("inter_session"),
+                "suspend_session": agents.get("inter_session"),
+                "resume_session": agents.get("inter_session"),
             }
 
             if function_name in function_map:
@@ -456,19 +552,40 @@ class MessagingHandler:
             logger.error(f"Error executing function {function_name}: {e}")
             return f"Error executing function: {e}"
 
-    def send_message(self, to_number: str, message_body: str, medium: str = 'sms', from_number: str = None) -> Optional[str]:
+    def send_message(self, to_number: str, message_body: str, medium: str = 'sms', from_number: str = None, url: str = None) -> Optional[str]:
         """Send outbound SMS or WhatsApp message.
 
         Args:
-            to_number: Recipient's phone number or email address
-            message_body: Message text
+            to_number: Recipient's phone number, contact name, or email address
+            message_body: Message text (or link description if url is provided)
             medium: 'sms', 'whatsapp', or 'gmail'
             from_number: Optional sender number override
+            url: Optional URL to send as a link (combines send_message and send_link functionality)
 
         Returns:
             Message SID or None if failed
         """
         try:
+            # Check if to_number is a contact name and look up phone number
+            if to_number and not to_number.startswith('+') and not to_number.startswith('whatsapp:') and '@' not in to_number:
+                # Might be a contact name - try to look it up
+                contact = self.db.search_contact(to_number)
+                if contact:
+                    if medium in ['sms', 'whatsapp'] and contact.get('phone'):
+                        to_number = contact['phone']
+                        logger.info(f"Found contact '{to_number}', using phone number: {contact['phone']}")
+                    elif medium == 'gmail' and contact.get('email'):
+                        to_number = contact['email']
+                        logger.info(f"Found contact '{to_number}', using email: {contact['email']}")
+                    else:
+                        logger.warning(f"Contact '{to_number}' found but no {medium} contact info available")
+            
+            # If url is provided, format message with link
+            if url:
+                if message_body:
+                    message_body = f"{message_body}\n\n{url}"
+                else:
+                    message_body = url
             # #region debug log
             try:
                 with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
@@ -725,6 +842,71 @@ class MessagingHandler:
             logger.error(f"Error sending {medium} message: {e}")
             return None
 
+    def send_email(self, to_email: str, subject: str, body: str) -> Optional[str]:
+        """Send an email via Gmail.
+
+        Args:
+            to_email: Recipient's email address or contact name (will look up email if contact name)
+            subject: Email subject
+            body: Email body
+
+        Returns:
+            Email message ID or None if failed
+        """
+        try:
+            # Check if to_email is a contact name and look up email address
+            recipient_email = to_email
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:send_email:entry", "message": "send_email called", "data": {"to_email": to_email, "has_at": '@' in to_email, "subject": subject[:50] if subject else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            if '@' not in to_email:
+                # Might be a contact name - try to look it up
+                contact = self.db.search_contact(to_email)
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:send_email:contact_lookup", "message": "Contact lookup result", "data": {"to_email": to_email, "contact_found": contact is not None, "has_email": contact.get('email') if contact else None, "target_email_available": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
+                if contact and contact.get('email'):
+                    recipient_email = contact['email']
+                    logger.info(f"Found contact '{to_email}', using email: {recipient_email}")
+                else:
+                    logger.warning(f"Contact '{to_email}' not found or has no email address")
+                    # Fallback to TARGET_EMAIL if contact lookup fails
+                    if Config.TARGET_EMAIL:
+                        recipient_email = Config.TARGET_EMAIL
+                        logger.info(f"Using TARGET_EMAIL as fallback: {recipient_email}")
+                        # #region debug log
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json
+                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:send_email:fallback", "message": "Using TARGET_EMAIL fallback", "data": {"to_email": to_email, "fallback_email": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                        except:
+                            pass
+                        # #endregion
+                    else:
+                        return None
+
+            if not self.gmail_handler:
+                logger.error("Gmail handler not available for sending email")
+                return None
+
+            result = self.gmail_handler.send_email(recipient_email, subject, body)
+            logger.info(f"Sent email to {recipient_email}: {subject}")
+            return str(result) if result else None
+
+        except Exception as e:
+            logger.error(f"Error sending email: {e}")
+            return None
+
     def send_link(self, to_number: str, url: str, description: str = '', medium: str = 'sms') -> Optional[str]:
         """Send a link to the user via SMS/WhatsApp.
 
@@ -743,4 +925,4 @@ class MessagingHandler:
         else:
             message_body = url
 
-        return self.send_message(to_number, message_body, medium)
+        return self.send_message(to_number, message_body, medium, url=url)

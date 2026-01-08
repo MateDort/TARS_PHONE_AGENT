@@ -151,6 +151,21 @@ class SessionManager:
             # Persist to database
             self.db.add_agent_session(session.to_dict())
 
+            # Generate and store session name embedding for similarity search
+            if Config.CONVERSATION_SEARCH_ENABLED and Config.GEMINI_API_KEY:
+                try:
+                    embedding = await self.db.generate_embedding_async(session_name, Config.GEMINI_API_KEY)
+                    if embedding:
+                        # Update session in database with embedding
+                        self.db.conn.execute(
+                            "UPDATE agent_sessions SET session_name_embedding = ? WHERE session_id = ?",
+                            (embedding, session_id)
+                        )
+                        self.db.conn.commit()
+                        logger.debug(f"Generated embedding for session name: {session_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate session name embedding: {e}")
+
             # Register with router (if available)
             if self.router:
                 await self.router.register_session(session)
@@ -403,8 +418,173 @@ class SessionManager:
         active_sessions = await self.get_active_sessions()
         return len(active_sessions)
 
+    async def get_session_info(self, session_id: str = None, session_name: str = None) -> Optional[Dict]:
+        """Get detailed information about a session.
+
+        Args:
+            session_id: Session UUID (optional)
+            session_name: Session name (optional, used if session_id not provided)
+
+        Returns:
+            Dictionary with session information or None if not found
+        """
+        session = None
+        if session_id:
+            session = await self.get_session(session_id)
+        elif session_name:
+            session = await self.get_session_by_name(session_name)
+
+        if not session:
+            return None
+
+        # Get conversation count
+        conversations = self.db.get_conversations_by_call_sid(session.call_sid)
+        
+        return {
+            'session_id': session.session_id,
+            'session_name': session.session_name,
+            'call_sid': session.call_sid,
+            'phone_number': session.phone_number,
+            'permission_level': session.permission_level.value,
+            'session_type': session.session_type.value,
+            'status': session.status.value,
+            'is_active': session.is_active(),
+            'purpose': session.purpose,
+            'created_at': session.created_at.isoformat() if session.created_at else None,
+            'message_count': len(conversations),
+            'parent_session_id': session.parent_session_id
+        }
+
+    async def suspend_session(self, session_id: str = None, session_name: str = None, reason: str = "user_request") -> bool:
+        """Suspend a session for later resumption.
+
+        Args:
+            session_id: Session UUID (optional)
+            session_name: Session name (optional, used if session_id not provided)
+            reason: Reason for suspension
+
+        Returns:
+            True if session was suspended, False otherwise
+        """
+        session = None
+        if session_id:
+            session = await self.get_session(session_id)
+        elif session_name:
+            session = await self.get_session_by_name(session_name)
+
+        if not session:
+            logger.warning(f"Session not found for suspension: {session_id or session_name}")
+            return False
+
+        if not session.is_active():
+            logger.warning(f"Session {session.session_id[:8]} is not active, cannot suspend")
+            return False
+
+        import json
+
+        # Save conversation snapshot
+        conversations = self.db.get_conversations_by_call_sid(session.call_sid)
+        conversation_history = [
+            {"sender": c['sender'], "message": c['message'], "timestamp": c['timestamp']}
+            for c in conversations
+        ]
+
+        self.db.save_session_snapshot(
+            session.session_id,
+            json.dumps(conversation_history),
+            snapshot_type='full'
+        )
+
+        # Suspend session
+        session.suspend()
+        self.db.suspend_session(session.session_id)
+        self.db.mark_session_resumable(session.session_id, True)
+
+        logger.info(f"Suspended session {session.session_id[:8]} ({session.session_name}) - {len(conversation_history)} messages saved")
+        return True
+
+    async def resume_session(self, session_id: str = None, session_name: str = None, 
+                            call_sid: str = None, websocket=None, stream_sid: str = None) -> Optional[AgentSession]:
+        """Resume a suspended session with conversation history.
+
+        Args:
+            session_id: Session UUID (optional)
+            session_name: Session name (optional, used if session_id not provided)
+            call_sid: New Twilio call SID
+            websocket: New WebSocket connection
+            stream_sid: New Twilio stream SID
+
+        Returns:
+            Resumed AgentSession or None if no session to resume
+        """
+        # Find session to resume - need to check ALL sessions (including suspended)
+        session = None
+        # #region debug log
+        try:
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import json
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "session_manager.py:resume_session:entry", "message": "Resume session called", "data": {"session_id": session_id, "session_name": session_name, "total_sessions": len(self.sessions)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+        except:
+            pass
+        # #endregion
+        if session_id:
+            session = await self.get_session(session_id)
+        elif session_name:
+            # Look up by name - but need to check ALL sessions, not just active ones
+            target = session_name.lower().strip()
+            for sess in self.sessions.values():
+                name = sess.session_name.lower()
+                if name == target or target in name:
+                    session = sess
+                    # #region debug log
+                    try:
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json
+                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "session_manager.py:resume_session:found_by_name", "message": "Session found by name", "data": {"session_name": session_name, "found_session_id": sess.session_id, "session_status": sess.status.value, "is_active": sess.is_active()}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                    except:
+                        pass
+                    # #endregion
+                    break
+
+        if not session:
+            logger.warning(f"Session not found for resumption: {session_id or session_name}")
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    all_session_names = [s.session_name for s in self.sessions.values()]
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "session_manager.py:resume_session:not_found", "message": "Session not found", "data": {"session_id": session_id, "session_name": session_name, "available_sessions": all_session_names}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
+            return None
+
+        # Check if session is resumable
+        session_data = self.db.get_session_by_id(session.session_id)
+        if not session_data or not session_data.get('can_resume'):
+            logger.warning(f"Session {session.session_id[:8]} is not resumable")
+            return None
+
+        # Resume with new connection details (if provided)
+        if call_sid and websocket and stream_sid:
+            session.resume(call_sid, websocket, stream_sid)
+            self.call_sid_to_session[call_sid] = session.session_id
+        else:
+            # Just mark as active without new connection (for informational resume)
+            session.status = SessionStatus.ACTIVE
+            self.db.update_session_activity(session.session_id)
+
+        # Restore conversation history to Gemini (if websocket provided)
+        if websocket:
+            await self._restore_conversation_history(session)
+
+        logger.info(f"Resumed session {session.session_id[:8]} ({session.session_name})")
+        return session
+
     async def get_session_by_name(self, session_name: str) -> Optional[AgentSession]:
         """Get session by name (for inter-agent messaging).
+        
+        Uses fuzzy matching first, then embedding-based similarity search if enabled.
 
         Args:
             session_name: Session name to search for
@@ -415,6 +595,7 @@ class SessionManager:
         target = session_name.lower().strip()
         candidates = []
 
+        # First, try fuzzy/exact matching
         for session in self.sessions.values():
             if not session.is_active():
                 continue
@@ -433,7 +614,78 @@ class SessionManager:
         if len(candidates) == 1:
             return candidates[0]
 
+        # If no fuzzy match and similarity search is enabled, try embedding-based search
+        if not candidates and Config.CONVERSATION_SEARCH_ENABLED and Config.GEMINI_API_KEY:
+            similar_sessions = await self.search_sessions_by_similarity(session_name, limit=1)
+            if similar_sessions:
+                return similar_sessions[0]
+
         return None
+
+    async def search_sessions_by_similarity(self, query_name: str, limit: int = 5, threshold: float = 0.7) -> List[AgentSession]:
+        """Search for sessions by name similarity using embeddings.
+
+        Args:
+            query_name: Session name to search for
+            limit: Maximum number of results
+            threshold: Minimum similarity threshold (0.0 to 1.0)
+
+        Returns:
+            List of AgentSession instances sorted by similarity
+        """
+        try:
+            import json
+
+            # Generate embedding for query
+            query_embedding_json = await self.db.generate_embedding_async(query_name, Config.GEMINI_API_KEY)
+            if not query_embedding_json:
+                logger.warning("Failed to generate embedding for query name")
+                return []
+
+            query_embedding = json.loads(query_embedding_json)
+            if isinstance(query_embedding, dict) and 'values' in query_embedding:
+                query_embedding = query_embedding['values']
+
+            # Get all active sessions with embeddings from database
+            cursor = self.db.conn.execute(
+                """SELECT session_id, session_name, session_name_embedding 
+                   FROM agent_sessions 
+                   WHERE status = 'active' AND session_name_embedding IS NOT NULL"""
+            )
+            session_rows = cursor.fetchall()
+
+            # Calculate similarity for each session
+            results = []
+            for row in session_rows:
+                try:
+                    session_id = row['session_id']
+                    session = await self.get_session(session_id)
+                    if not session or not session.is_active():
+                        continue
+
+                    session_embedding_json = row['session_name_embedding']
+                    if not session_embedding_json:
+                        continue
+
+                    session_embedding = json.loads(session_embedding_json)
+                    if isinstance(session_embedding, dict) and 'values' in session_embedding:
+                        session_embedding = session_embedding['values']
+
+                    # Calculate cosine similarity
+                    similarity = self.db._cosine_similarity(query_embedding, session_embedding)
+                    if similarity >= threshold:
+                        results.append((session, similarity))
+                except Exception as e:
+                    logger.warning(f"Error calculating similarity for session {row.get('session_id')}: {e}")
+                    continue
+
+            # Sort by similarity (highest first)
+            results.sort(key=lambda x: x[1], reverse=True)
+            return [session for session, _ in results[:limit]]
+
+        except Exception as e:
+            logger.error(f"Error in similarity search: {e}")
+            return []
 
     async def terminate_session(self, session_id: str, reason: str = "completed"):
         """Terminate a session and perform cleanup.
