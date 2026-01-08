@@ -185,16 +185,42 @@ class MessagingHandler:
             if context:
                 system_instruction += f"\n\nRecent conversation history:\n{context}"
 
-            # Try to find active Máté session for live session routing
+            # Check if message is from TARGET_EMAIL or TARGET_PHONE_NUMBER
+            is_from_target = False
+            if medium == 'gmail':
+                is_from_target = from_number.lower() == Config.TARGET_EMAIL.lower()
+            else:
+                # For SMS/WhatsApp, check phone number
+                is_from_target = from_number == Config.TARGET_PHONE_NUMBER
+
+            # Try to find or create active Máté session for live session routing
             mate_session = None
-            if self.session_manager and permission_level == PermissionLevel.FULL:
+            if self.session_manager and permission_level == PermissionLevel.FULL and is_from_target:
                 mate_session = await self.session_manager.get_mate_main_session()
+                
+                # If no active session exists, create one for messages/emails
+                if not mate_session or not mate_session.is_active():
+                    logger.info("No active Máté session found, creating message session")
+                    try:
+                        mate_session = await self.session_manager.create_message_session(
+                            phone_number=from_number if medium != 'gmail' else Config.TARGET_PHONE_NUMBER,
+                            email_address=from_number if medium == 'gmail' else None
+                        )
+                        logger.info(f"Created message session: {mate_session.session_name}")
+                    except Exception as e:
+                        logger.error(f"Error creating message session: {e}")
+                        mate_session = None
+                
                 if mate_session and mate_session.is_active():
                     # Inject message into live session
                     logger.info(f"Routing message to active Máté session: {mate_session.session_name}")
                     try:
-                        await mate_session.gemini_client.session.send(
-                            input=message_body,
+                        # Update last activity timestamp
+                        if hasattr(mate_session, 'update_activity'):
+                            mate_session.update_activity()
+                        
+                        await mate_session.gemini_client.send_text(
+                            message_body,
                             end_of_turn=True
                         )
                         # Response will come through normal session flow
@@ -525,6 +551,14 @@ class MessagingHandler:
                 "send_notification": agents["notification"],
                 "send_message": agents.get("message"),
                 "send_email": agents.get("email"),
+                "archive_email": agents.get("email"),
+                "delete_email": agents.get("email"),
+                "make_draft": agents.get("email"),
+                "search_emails": agents.get("email"),
+                "bulk_delete_emails": agents.get("email"),
+                "send_draft": agents.get("email"),
+                "delete_draft": agents.get("email"),
+                "list_drafts": agents.get("email"),
                 "search_conversations": agents.get("conversation_search"),
                 "make_goal_call": agents.get("outbound_call"),
                 "send_message_to_session": agents.get("inter_session"),

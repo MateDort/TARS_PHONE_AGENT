@@ -67,7 +67,7 @@ class TARSPhoneAgent:
             system_instruction=system_instruction
         )
 
-        # Initialize SessionManager for agent hub
+        # Initialize SessionManager for agent hub (handlers will be set later)
         self.session_manager = SessionManager(self.db)
         logger.info("SessionManager initialized")
 
@@ -127,8 +127,9 @@ class TARSPhoneAgent:
         )
         self.messaging_handler.gmail_handler = self.gmail_handler
 
-        # Connect gmail_handler to session_manager for call summaries
+        # Connect gmail_handler and messaging_handler to session_manager
         self.session_manager.gmail_handler = self.gmail_handler
+        self.session_manager.messaging_handler = self.messaging_handler
 
         # Initialize messaging platform abstraction
         self.messaging_platform = create_messaging_platform(
@@ -200,6 +201,14 @@ class TARSPhoneAgent:
             # May be None if messaging not available
             "send_message": agents.get("message"),
             "send_email": agents.get("email"),
+            "archive_email": agents.get("email"),
+            "delete_email": agents.get("email"),
+            "make_draft": agents.get("email"),
+            "search_emails": agents.get("email"),
+            "bulk_delete_emails": agents.get("email"),
+            "send_draft": agents.get("email"),
+            "delete_draft": agents.get("email"),
+            "list_drafts": agents.get("email"),
             # May be None if twilio not available
             "make_goal_call": agents.get("outbound_call"),
             # InterSessionAgent functions

@@ -226,6 +226,22 @@ class Database:
                 )
             """)
 
+            # Create email_drafts table (for draft management)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS email_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    draft_id TEXT NOT NULL UNIQUE,
+                    gmail_draft_id TEXT,
+                    recipient_email TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    sent_at TEXT,
+                    deleted_at TEXT
+                )
+            """)
+
             self.conn.commit()
 
             # Run migrations
@@ -292,6 +308,111 @@ class Database:
 
         except Exception as e:
             logger.warning(f"Migration error (non-critical): {e}")
+
+    # ==================== EMAIL DRAFTS ====================
+
+    def add_email_draft(self, draft_id: str, gmail_draft_id: str = None, recipient_email: str = "", 
+                       subject: str = "", body: str = "") -> bool:
+        """Add a new email draft.
+        
+        Args:
+            draft_id: Unique draft identifier
+            gmail_draft_id: Gmail API draft ID (if created via Gmail API)
+            recipient_email: Recipient email address
+            subject: Email subject
+            body: Email body
+            
+        Returns:
+            True if successful
+        """
+        try:
+            self.conn.execute("""
+                INSERT INTO email_drafts (draft_id, gmail_draft_id, recipient_email, subject, body, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (draft_id, gmail_draft_id, recipient_email, subject, body, datetime.now().isoformat()))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding email draft: {e}")
+            return False
+
+    def get_email_draft(self, draft_id: str) -> Optional[Dict]:
+        """Get email draft by ID.
+        
+        Args:
+            draft_id: Draft identifier
+            
+        Returns:
+            Draft dict or None if not found
+        """
+        cursor = self.conn.execute("""
+            SELECT * FROM email_drafts WHERE draft_id = ? AND deleted_at IS NULL
+        """, (draft_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def list_email_drafts(self, status: str = 'pending') -> List[Dict]:
+        """List all email drafts.
+        
+        Args:
+            status: Filter by status (pending, sent, deleted)
+            
+        Returns:
+            List of draft dicts
+        """
+        cursor = self.conn.execute("""
+            SELECT * FROM email_drafts 
+            WHERE status = ? AND deleted_at IS NULL
+            ORDER BY created_at DESC
+        """, (status,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_email_draft_status(self, draft_id: str, status: str, sent_at: str = None) -> bool:
+        """Update draft status.
+        
+        Args:
+            draft_id: Draft identifier
+            status: New status (pending, sent, deleted)
+            sent_at: Optional timestamp when sent
+            
+        Returns:
+            True if successful
+        """
+        try:
+            if status == 'sent' and sent_at:
+                self.conn.execute("""
+                    UPDATE email_drafts 
+                    SET status = ?, sent_at = ? 
+                    WHERE draft_id = ?
+                """, (status, sent_at, draft_id))
+            elif status == 'deleted':
+                self.conn.execute("""
+                    UPDATE email_drafts 
+                    SET status = ?, deleted_at = ? 
+                    WHERE draft_id = ?
+                """, (status, datetime.now().isoformat(), draft_id))
+            else:
+                self.conn.execute("""
+                    UPDATE email_drafts 
+                    SET status = ? 
+                    WHERE draft_id = ?
+                """, (status, draft_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating draft status: {e}")
+            return False
+
+    def delete_email_draft(self, draft_id: str) -> bool:
+        """Delete an email draft.
+        
+        Args:
+            draft_id: Draft identifier
+            
+        Returns:
+            True if successful
+        """
+        return self.update_email_draft_status(draft_id, 'deleted')
 
     # ==================== REMINDERS ====================
 

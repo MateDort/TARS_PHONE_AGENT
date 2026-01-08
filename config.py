@@ -116,6 +116,9 @@ class Config:
     # Conversation Search Configuration
     CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'  # Enable conversation search features
 
+    # Message Session Configuration
+    MESSAGE_SESSION_TIMEOUT = int(os.getenv('MESSAGE_SESSION_TIMEOUT', '120'))  # Timeout in seconds (default: 2 minutes)
+
     @classmethod
     def validate(cls):
         """Validate that required configuration is present."""
@@ -185,5 +188,6 @@ class Config:
         cls.LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))
         cls.AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'
         cls.CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'
+        cls.MESSAGE_SESSION_TIMEOUT = int(os.getenv('MESSAGE_SESSION_TIMEOUT', '120'))
 
         return True

@@ -874,25 +874,50 @@ class MessageAgent(SubAgent):
 
 
 class EmailAgent(SubAgent):
-    """Agent for sending emails to contacts or email addresses."""
+    """Agent for sending emails, managing drafts, and handling email operations."""
 
     def __init__(self, messaging_handler):
         super().__init__(
             name="email_agent",
-            description="Sends emails to contacts or email addresses"
+            description="Sends emails, manages drafts, archives, deletes, and searches emails"
         )
         self.messaging_handler = messaging_handler
 
     async def execute(self, args: Dict[str, Any]) -> str:
-        """Handle email sending request.
+        """Handle email operations.
 
         Args:
-            args: {
-                "to": str (contact name or email address),
-                "subject": str (email subject),
-                "body": str (email body)
-            }
+            args: Various depending on action
         """
+        action = args.get("action", "send")
+        
+        if action == "send":
+            return await self._send_email(args)
+        elif action == "archive":
+            return await self._archive_email(args)
+        elif action == "delete":
+            return await self._delete_email(args)
+        elif action == "make_draft" or action == "create_draft":
+            return await self._make_draft(args)
+        elif action == "search" or action == "list":
+            return await self._search_emails(args)
+        elif action == "bulk_delete":
+            return await self._bulk_delete_emails(args)
+        elif action == "bulk_archive":
+            return await self._bulk_archive_emails(args)
+        elif action == "send_draft":
+            return await self._send_draft(args)
+        elif action == "delete_draft":
+            return await self._delete_draft(args)
+        elif action == "list_drafts":
+            return await self._list_drafts(args)
+        else:
+            return f"Unknown email action: {action}, sir."
+
+    async def _send_email(self, args: Dict[str, Any]) -> str:
+        """Send an email."""
+        # Support both old format (no action) and new format (with action)
+        action = args.get("action", "send")
         to_email = args.get("to", "")
         subject = args.get("subject", "TARS Message")
         body = args.get("body", "")
@@ -908,6 +933,206 @@ class EmailAgent(SubAgent):
             return f"Email sent to {to_email}, sir."
         else:
             return f"Failed to send email to {to_email}, sir."
+
+    async def _archive_email(self, args: Dict[str, Any]) -> str:
+        """Archive an email by message ID."""
+        message_id = args.get("message_id", "")
+        if not message_id:
+            return "Please provide a message ID, sir."
+        
+        if self.messaging_handler and self.messaging_handler.gmail_handler:
+            result = self.messaging_handler.gmail_handler.archive_email(message_id)
+            if result:
+                return f"Email {message_id} archived, sir."
+            else:
+                return f"Failed to archive email {message_id}, sir."
+        return "Gmail handler not available, sir."
+
+    async def _delete_email(self, args: Dict[str, Any]) -> str:
+        """Delete an email by message ID."""
+        message_id = args.get("message_id", "")
+        if not message_id:
+            return "Please provide a message ID, sir."
+        
+        if self.messaging_handler and self.messaging_handler.gmail_handler:
+            result = self.messaging_handler.gmail_handler.delete_email(message_id)
+            if result:
+                return f"Email {message_id} deleted, sir."
+            else:
+                return f"Failed to delete email {message_id}, sir."
+        return "Gmail handler not available, sir."
+
+    async def _make_draft(self, args: Dict[str, Any]) -> str:
+        """Create a draft email."""
+        to_email = args.get("to", "")
+        subject = args.get("subject", "Draft")
+        body = args.get("body", "")
+
+        if not to_email:
+            return "Please provide a recipient, sir."
+
+        if not body:
+            return "Please provide email body content, sir."
+
+        if self.messaging_handler and self.messaging_handler.gmail_handler:
+            draft_id = await self.messaging_handler.gmail_handler.create_draft(to_email, subject, body)
+            if draft_id:
+                return f"Draft created for {to_email}, sir."
+            else:
+                return f"Failed to create draft, sir."
+        return "Gmail handler not available, sir."
+
+    async def _search_emails(self, args: Dict[str, Any]) -> str:
+        """Search or list emails."""
+        folder = args.get("folder", "inbox")
+        query = args.get("query")
+        category = args.get("category")
+        limit = int(args.get("limit", 20))
+
+        if self.messaging_handler and self.messaging_handler.gmail_handler:
+            if category:
+                # Search by category using AI
+                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
+                    folder, category, limit
+                )
+            else:
+                # Regular search/list
+                emails = self.messaging_handler.gmail_handler.list_emails(folder, query, limit)
+            
+            if not emails:
+                return f"No emails found in {folder}, sir."
+            
+            # Format results
+            lines = [f"Found {len(emails)} email(s) in {folder}:"]
+            for email_data in emails[:limit]:
+                lines.append(f"- From: {email_data.get('sender', 'Unknown')}")
+                lines.append(f"  Subject: {email_data.get('subject', '(No Subject)')}")
+                lines.append(f"  Date: {email_data.get('date', 'Unknown')}")
+                lines.append(f"  ID: {email_data.get('id', 'Unknown')}")
+                lines.append("")
+            
+            return "\n".join(lines)
+        return "Gmail handler not available, sir."
+
+    async def _bulk_delete_emails(self, args: Dict[str, Any]) -> str:
+        """Delete multiple emails by criteria."""
+        folder = args.get("folder", "inbox")
+        category = args.get("category")
+        criteria = args.get("criteria")
+        confirm = args.get("confirm", True)
+
+        if self.messaging_handler and self.messaging_handler.gmail_handler:
+            # First, find emails matching criteria
+            if category:
+                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
+                    folder, category, limit=100
+                )
+            elif criteria:
+                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
+                    folder, criteria, limit=100
+                )
+            else:
+                return "Please provide category or criteria for bulk delete, sir."
+            
+            if not emails:
+                return f"No emails found matching criteria in {folder}, sir."
+            
+            email_ids = [e.get('id') for e in emails if e.get('id')]
+            
+            if len(email_ids) > 10 and confirm:
+                return f"Found {len(email_ids)} emails to delete. Please confirm by saying 'yes' or 'confirm', sir."
+            
+            result = self.messaging_handler.gmail_handler.bulk_delete_emails(email_ids)
+            return f"Deleted {result['deleted']} email(s), {result['failed']} failed, sir."
+        return "Gmail handler not available, sir."
+
+    async def _bulk_archive_emails(self, args: Dict[str, Any]) -> str:
+        """Archive multiple emails by criteria."""
+        folder = args.get("folder", "inbox")
+        category = args.get("category")
+        criteria = args.get("criteria")
+
+        if self.messaging_handler and self.messaging_handler.gmail_handler:
+            # Find emails matching criteria
+            if category:
+                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
+                    folder, category, limit=100
+                )
+            elif criteria:
+                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
+                    folder, criteria, limit=100
+                )
+            else:
+                return "Please provide category or criteria for bulk archive, sir."
+            
+            if not emails:
+                return f"No emails found matching criteria in {folder}, sir."
+            
+            email_ids = [e.get('id') for e in emails if e.get('id')]
+            result = self.messaging_handler.gmail_handler.bulk_archive_emails(email_ids)
+            return f"Archived {result['archived']} email(s), {result['failed']} failed, sir."
+        return "Gmail handler not available, sir."
+
+    async def _send_draft(self, args: Dict[str, Any]) -> str:
+        """Send a draft email."""
+        draft_id = args.get("draft_id", "")
+        if not draft_id:
+            return "Please provide a draft ID, sir."
+        
+        # Get draft from database
+        if self.messaging_handler and hasattr(self.messaging_handler, 'db') and self.messaging_handler.db:
+            draft = self.messaging_handler.db.get_email_draft(draft_id)
+            if not draft:
+                return f"Draft {draft_id} not found, sir."
+            
+            # Send the email
+            result = self.messaging_handler.send_email(
+                draft['recipient_email'],
+                draft['subject'],
+                draft['body']
+            )
+            
+            if result:
+                # Update draft status
+                self.messaging_handler.db.update_email_draft_status(draft_id, 'sent', datetime.now().isoformat())
+                return f"Draft sent to {draft['recipient_email']}, sir."
+            else:
+                return f"Failed to send draft, sir."
+        return "Database not available, sir."
+
+    async def _delete_draft(self, args: Dict[str, Any]) -> str:
+        """Delete a draft email."""
+        draft_id = args.get("draft_id", "")
+        if not draft_id:
+            return "Please provide a draft ID, sir."
+        
+        if self.messaging_handler and hasattr(self.messaging_handler, 'db') and self.messaging_handler.db:
+            result = self.messaging_handler.db.delete_email_draft(draft_id)
+            if result:
+                return f"Draft {draft_id} deleted, sir."
+            else:
+                return f"Failed to delete draft {draft_id}, sir."
+        return "Database not available, sir."
+
+    async def _list_drafts(self, args: Dict[str, Any]) -> str:
+        """List all email drafts."""
+        status = args.get("status", "pending")
+        
+        if self.messaging_handler and hasattr(self.messaging_handler, 'db') and self.messaging_handler.db:
+            drafts = self.messaging_handler.db.list_email_drafts(status)
+            if not drafts:
+                return f"No {status} drafts found, sir."
+            
+            lines = [f"Found {len(drafts)} {status} draft(s):"]
+            for draft in drafts:
+                lines.append(f"- Draft ID: {draft['draft_id']}")
+                lines.append(f"  To: {draft['recipient_email']}")
+                lines.append(f"  Subject: {draft['subject']}")
+                lines.append(f"  Created: {draft['created_at']}")
+                lines.append("")
+            
+            return "\n".join(lines)
+        return "Database not available, sir."
 
 
 class NotificationAgent(SubAgent):
@@ -2061,6 +2286,10 @@ def get_function_declarations() -> list:
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'send' (default)"
+                    },
                     "to": {
                         "type": "STRING",
                         "description": "Recipient: contact name (if email available for contact) or email address"
@@ -2075,6 +2304,182 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["to", "body"]
+            }
+        },
+        {
+            "name": "archive_email",
+            "description": "Archive an email by message ID. Use this to move emails out of inbox.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'archive'"
+                    },
+                    "message_id": {
+                        "type": "STRING",
+                        "description": "Email message ID to archive"
+                    }
+                },
+                "required": ["action", "message_id"]
+            }
+        },
+        {
+            "name": "delete_email",
+            "description": "Delete an email by message ID. Use this to permanently remove emails.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'delete'"
+                    },
+                    "message_id": {
+                        "type": "STRING",
+                        "description": "Email message ID to delete"
+                    }
+                },
+                "required": ["action", "message_id"]
+            }
+        },
+        {
+            "name": "make_draft",
+            "description": "Create a draft email. The draft will be saved and can be sent later.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'make_draft' or 'create_draft'"
+                    },
+                    "to": {
+                        "type": "STRING",
+                        "description": "Recipient email address or contact name"
+                    },
+                    "subject": {
+                        "type": "STRING",
+                        "description": "Email subject line"
+                    },
+                    "body": {
+                        "type": "STRING",
+                        "description": "Email body content"
+                    }
+                },
+                "required": ["action", "to", "body"]
+            }
+        },
+        {
+            "name": "search_emails",
+            "description": "Search or list emails from inbox, archived, or all folders. Can search by query, category (advertisement, promotional, spam, etc.), or just list recent emails. Examples: 'what emails do I have', 'show me emails from Amazon', 'list archived emails'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'list' (show recent emails) or 'search' (search by criteria)"
+                    },
+                    "folder": {
+                        "type": "STRING",
+                        "description": "Folder to search: 'inbox', 'archived', or 'all' (default: 'inbox')"
+                    },
+                    "query": {
+                        "type": "STRING",
+                        "description": "Search query (e.g., 'from:amazon.com', 'subject:invoice', or text search)"
+                    },
+                    "category": {
+                        "type": "STRING",
+                        "description": "Filter by category: 'advertisement', 'promotional', 'spam', 'important', 'newsletter', 'notification'"
+                    },
+                    "limit": {
+                        "type": "STRING",
+                        "description": "Maximum number of results (default: 20)"
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "bulk_delete_emails",
+            "description": "Delete multiple emails at once by criteria. Can delete all emails of a specific category (e.g., 'delete all advertisement emails from archived'). Requires confirmation for large batches.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'bulk_delete'"
+                    },
+                    "folder": {
+                        "type": "STRING",
+                        "description": "Folder to search: 'inbox', 'archived', or 'all' (default: 'inbox')"
+                    },
+                    "category": {
+                        "type": "STRING",
+                        "description": "Category to delete: 'advertisement', 'promotional', 'spam', etc."
+                    },
+                    "criteria": {
+                        "type": "STRING",
+                        "description": "Search criteria (alternative to category)"
+                    },
+                    "confirm": {
+                        "type": "STRING",
+                        "description": "Require confirmation for large batches (default: 'true')"
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "send_draft",
+            "description": "Send a previously created draft email.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'send_draft'"
+                    },
+                    "draft_id": {
+                        "type": "STRING",
+                        "description": "Draft ID to send"
+                    }
+                },
+                "required": ["action", "draft_id"]
+            }
+        },
+        {
+            "name": "delete_draft",
+            "description": "Delete a draft email without sending it.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'delete_draft'"
+                    },
+                    "draft_id": {
+                        "type": "STRING",
+                        "description": "Draft ID to delete"
+                    }
+                },
+                "required": ["action", "draft_id"]
+            }
+        },
+        {
+            "name": "list_drafts",
+            "description": "List all email drafts. Shows pending drafts that can be sent or deleted.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'list_drafts'"
+                    },
+                    "status": {
+                        "type": "STRING",
+                        "description": "Filter by status: 'pending', 'sent', 'deleted' (default: 'pending')"
+                    }
+                },
+                "required": ["action"]
             }
         },
         {

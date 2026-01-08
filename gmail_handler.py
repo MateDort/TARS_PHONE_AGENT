@@ -128,19 +128,27 @@ class GmailHandler:
                 logger.info(f"Received email from {sender}: {subject}")
                 print(f"DEBUG: Processing email from {sender}: {subject}")
 
-                # Process via MessagingHandler (reusing the AI logic)
-                # We treat the email address as the "phone number" for ID purposes
-                if self.messaging_handler:
-                    # Run in background to not block polling
-                    # Note: We use the main loop from the handler if available, or create a new task
-                    # Since we are in a thread, we need to be careful.
-                    # Ideally, we schedule this back on the main loop.
-                    coro = self.messaging_handler.process_incoming_message(
-                        from_number=sender,
-                        message_body=body.strip(),
-                        medium='gmail',
-                        to_number=self.email_user
-                    )
+                # Email filtering logic
+                # Only process emails from TARGET_EMAIL (user's own email)
+                if sender.lower() == Config.TARGET_EMAIL.lower():
+                    # This is from the user - process normally
+                    if self.messaging_handler:
+                        coro = self.messaging_handler.process_incoming_message(
+                            from_number=sender,
+                            message_body=body.strip(),
+                            medium='gmail',
+                            to_number=self.email_user
+                        )
+                        asyncio.run_coroutine_threadsafe(coro, loop)
+                elif any(term in sender.lower() for term in ['no-reply', 'noreply', 'donotreply', 'no_reply']):
+                    # Skip no-reply emails - don't process
+                    logger.info(f"Skipping no-reply email from {sender}")
+                    continue
+                else:
+                    # Other emails - use AI to determine if needs reply
+                    # Run async check in thread
+                    message_id = num.decode('utf-8')
+                    coro = self._process_other_email(sender, subject, body.strip(), message_id)
                     asyncio.run_coroutine_threadsafe(coro, loop)
 
             mail.logout()
@@ -455,3 +463,556 @@ Continue the conversation on your call.
         server.login(self.email_user, self.email_pass)
         server.send_message(msg)
         server.quit()
+
+    async def _process_other_email(self, sender: str, subject: str, body: str, message_id: str):
+        """Process emails that are not from TARGET_EMAIL and not no-reply.
+        
+        Args:
+            sender: Sender email address
+            subject: Email subject
+            body: Email body
+            message_id: IMAP message ID (string)
+        """
+        try:
+            # Use AI to determine if email needs a reply
+            needs_reply = await self._should_reply_to_email(sender, subject, body)
+            
+            if needs_reply:
+                # Create draft and notify user
+                await self._create_draft_and_notify(sender, subject, body)
+            else:
+                # Use smart processing to decide action
+                await self._smart_process_email(sender, subject, body, message_id)
+        except Exception as e:
+            logger.error(f"Error processing other email: {e}")
+
+    async def _should_reply_to_email(self, sender: str, subject: str, body: str) -> bool:
+        """Use AI to determine if an email needs a reply.
+        
+        Args:
+            sender: Sender email address
+            subject: Email subject
+            body: Email body
+            
+        Returns:
+            True if email needs a reply, False otherwise
+        """
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=Config.GEMINI_API_KEY
+            )
+            
+            prompt = f"""Analyze this email and determine if it needs a reply from the user.
+
+From: {sender}
+Subject: {subject}
+Body: {body[:500]}
+
+Consider:
+- Is it a personal message that requires a response?
+- Is it a question or request?
+- Is it a transactional email (receipts, confirmations) that doesn't need a reply?
+- Is it promotional/marketing that can be ignored?
+
+Respond with only "YES" if it needs a reply, or "NO" if it doesn't."""
+            
+            response = await client.aio.models.generate_content(
+                model="models/gemini-2.0-flash-exp",
+                contents=[types.Content(parts=[types.Part(text=prompt)], role="user")],
+                config=types.GenerateContentConfig(temperature=0.3)
+            )
+            
+            if response.candidates and response.candidates[0].content.parts:
+                result = response.candidates[0].content.parts[0].text.strip().upper()
+                return "YES" in result
+            
+            return False
+        except Exception as e:
+            logger.error(f"Error determining if email needs reply: {e}")
+            return False
+        finally:
+            if 'client' in locals():
+                client.close()
+
+    async def _smart_process_email(self, sender: str, subject: str, body: str, message_id: str):
+        """Intelligently process email using AI to decide action.
+        
+        Args:
+            sender: Sender email address
+            subject: Email subject
+            body: Email body
+            message_id: IMAP message ID (string)
+        """
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=Config.GEMINI_API_KEY
+            )
+            
+            prompt = f"""Analyze this email and decide the best action:
+
+From: {sender}
+Subject: {subject}
+Body: {body[:500]}
+
+Actions available:
+- archive: For promotional emails, newsletters, non-urgent updates
+- delete: For obvious spam, junk mail, unwanted advertisements
+- notify: For important emails that need user attention but don't need immediate reply
+
+Respond with only one word: "archive", "delete", or "notify"."""
+            
+            response = await client.aio.models.generate_content(
+                model="models/gemini-2.0-flash-exp",
+                contents=[types.Content(parts=[types.Part(text=prompt)], role="user")],
+                config=types.GenerateContentConfig(temperature=0.3)
+            )
+            
+            action = None
+            if response.candidates and response.candidates[0].content.parts:
+                result = response.candidates[0].content.parts[0].text.strip().lower()
+                if "archive" in result:
+                    action = "archive"
+                elif "delete" in result:
+                    action = "delete"
+                else:
+                    action = "notify"
+            
+            # Execute action
+            if action == "archive":
+                await asyncio.to_thread(self.archive_email, message_id)
+                await self._notify_email_action(sender, subject, "archived")
+            elif action == "delete":
+                await asyncio.to_thread(self.delete_email, message_id)
+                await self._notify_email_action(sender, subject, "deleted")
+            else:
+                # Notify user about the email
+                await self._notify_email_action(sender, subject, "received")
+                
+        except Exception as e:
+            logger.error(f"Error in smart email processing: {e}")
+        finally:
+            if 'client' in locals():
+                client.close()
+
+    async def _notify_email_action(self, sender: str, subject: str, action: str):
+        """Notify user about email action taken.
+        
+        Args:
+            sender: Sender email address
+            subject: Email subject
+            action: Action taken (archived, deleted, received)
+        """
+        try:
+            if action == "archived":
+                message = f"I archived an email from {sender} with subject '{subject}'"
+            elif action == "deleted":
+                message = f"I deleted an email from {sender} with subject '{subject}'"
+            else:
+                message = f"Received email from {sender}: {subject}"
+            
+            # Send notification via email
+            if self.messaging_handler and self.messaging_handler.gmail_handler:
+                await self.send_console_message(message, "notification")
+        except Exception as e:
+            logger.error(f"Error notifying email action: {e}")
+
+    async def _create_draft_and_notify(self, sender: str, subject: str, body: str):
+        """Create a draft email and notify user for approval.
+        
+        Args:
+            sender: Sender email address
+            subject: Original email subject
+            body: Original email body
+        """
+        try:
+            import uuid
+            draft_id = str(uuid.uuid4())
+            
+            # Use AI to generate a reply
+            reply_body = await self._generate_reply_draft(sender, subject, body)
+            
+            # Create draft using Gmail API (or store in database)
+            gmail_draft_id = await self.create_draft(
+                to_email=sender,
+                subject=f"Re: {subject}",
+                body=reply_body
+            )
+            
+            # Store draft in database
+            self.db.add_email_draft(
+                draft_id=draft_id,
+                gmail_draft_id=gmail_draft_id,
+                recipient_email=sender,
+                subject=f"Re: {subject}",
+                body=reply_body
+            )
+            
+            # Send notification via email and SMS
+            notification_body = f"""I've created a draft email for you:
+
+To: {sender}
+Subject: Re: {subject}
+
+{reply_body[:200]}...
+
+Options:
+- Reply "yes" or "send" to send the draft
+- Reply "review" to see the full draft
+- Reply "delete" to delete the draft"""
+            
+            # Send email notification
+            await self.send_console_message(notification_body, "confirmation_request")
+            
+            # Send SMS notification if messaging handler available
+            if self.messaging_handler:
+                self.messaging_handler.send_message(
+                    to_number=Config.TARGET_PHONE_NUMBER,
+                    message_body=f"TARS created a draft reply to {sender}. Check your email for details.",
+                    medium='sms'
+                )
+                
+        except Exception as e:
+            logger.error(f"Error creating draft and notifying: {e}")
+
+    async def _generate_reply_draft(self, sender: str, subject: str, body: str) -> str:
+        """Generate a draft reply using AI.
+        
+        Args:
+            sender: Sender email address
+            subject: Original email subject
+            body: Original email body
+            
+        Returns:
+            Draft reply text
+        """
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=Config.GEMINI_API_KEY
+            )
+            
+            prompt = f"""Write a professional email reply to this message:
+
+From: {sender}
+Subject: {subject}
+Body: {body}
+
+Write a concise, professional reply in the user's name. Keep it brief and appropriate."""
+            
+            response = await client.aio.models.generate_content(
+                model="models/gemini-2.0-flash-exp",
+                contents=[types.Content(parts=[types.Part(text=prompt)], role="user")],
+                config=types.GenerateContentConfig(temperature=0.7)
+            )
+            
+            if response.candidates and response.candidates[0].content.parts:
+                return response.candidates[0].content.parts[0].text.strip()
+            
+            return "Thank you for your email. I will get back to you soon."
+        except Exception as e:
+            logger.error(f"Error generating reply draft: {e}")
+            return "Thank you for your email. I will get back to you soon."
+        finally:
+            if 'client' in locals():
+                client.close()
+
+    def archive_email(self, message_id: str) -> bool:
+        """Archive an email by message ID using IMAP.
+        
+        Args:
+            message_id: IMAP message ID (sequence number)
+            
+        Returns:
+            True if successful
+        """
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(self.email_user, self.email_pass)
+            mail.select("inbox")
+            
+            # Move email to Archive folder
+            mail.store(message_id, '+X-GM-LABELS', '\\Archived')
+            mail.expunge()
+            mail.logout()
+            
+            logger.info(f"Archived email {message_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error archiving email: {e}")
+            return False
+
+    def delete_email(self, message_id: str) -> bool:
+        """Delete an email by message ID using IMAP.
+        
+        Args:
+            message_id: IMAP message ID (sequence number)
+            
+        Returns:
+            True if successful
+        """
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(self.email_user, self.email_pass)
+            mail.select("inbox")
+            
+            # Mark as deleted and expunge
+            mail.store(message_id, '+FLAGS', '\\Deleted')
+            mail.expunge()
+            mail.logout()
+            
+            logger.info(f"Deleted email {message_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting email: {e}")
+            return False
+
+    async def create_draft(self, to_email: str, subject: str, body: str) -> Optional[str]:
+        """Create a draft email using Gmail API.
+        
+        Args:
+            to_email: Recipient email address
+            subject: Email subject
+            body: Email body
+            
+        Returns:
+            Gmail draft ID or None if failed
+        """
+        try:
+            # For now, we'll use IMAP to create a draft
+            # In the future, this could use Gmail API for better integration
+            msg = MIMEMultipart()
+            msg['From'] = f"TARS <{self.email_user}>"
+            msg['To'] = to_email
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain'))
+            
+            # Use IMAP to append as draft
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(self.email_user, self.email_pass)
+            mail.select("[Gmail]/Drafts")
+            
+            # Append message as draft
+            mail.append("[Gmail]/Drafts", None, None, msg.as_bytes())
+            mail.logout()
+            
+            logger.info(f"Created draft email to {to_email}")
+            # Return a placeholder ID (in production, use Gmail API to get real draft ID)
+            return f"draft_{datetime.now().timestamp()}"
+        except Exception as e:
+            logger.error(f"Error creating draft: {e}")
+            return None
+
+    def list_emails(self, folder: str = "inbox", query: Optional[str] = None, limit: int = 20) -> List[Dict]:
+        """List emails from specified folder with optional search query.
+        
+        Args:
+            folder: Folder name ("inbox", "archived", "all")
+            query: Optional IMAP search query
+            limit: Maximum number of results
+            
+        Returns:
+            List of email dicts with id, subject, sender, date
+        """
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(self.email_user, self.email_pass)
+            
+            # Map folder names to IMAP folder names
+            folder_map = {
+                "inbox": "inbox",
+                "archived": "[Gmail]/All Mail",
+                "all": "[Gmail]/All Mail"
+            }
+            imap_folder = folder_map.get(folder.lower(), "inbox")
+            mail.select(imap_folder)
+            
+            # Build search query
+            if query:
+                # Support basic IMAP search syntax
+                if query.startswith("from:"):
+                    search_query = f'(FROM "{query[5:]}")'
+                elif query.startswith("subject:"):
+                    search_query = f'(SUBJECT "{query[8:]}")'
+                else:
+                    search_query = f'(TEXT "{query}")'
+            else:
+                search_query = 'ALL'
+            
+            status, messages = mail.search(None, search_query)
+            
+            if status != "OK" or not messages[0]:
+                mail.logout()
+                return []
+            
+            email_ids = messages[0].split()[-limit:]  # Get last N emails
+            emails = []
+            
+            for num in reversed(email_ids):  # Most recent first
+                try:
+                    status, msg_data = mail.fetch(num, "(RFC822)")
+                    if status != "OK":
+                        continue
+                    
+                    raw_email = msg_data[0][1]
+                    msg = email.message_from_bytes(raw_email)
+                    
+                    sender = email.utils.parseaddr(msg['From'])[1]
+                    subject = msg['Subject'] or "(No Subject)"
+                    date = msg['Date']
+                    
+                    emails.append({
+                        'id': num.decode('utf-8'),
+                        'subject': subject,
+                        'sender': sender,
+                        'date': date
+                    })
+                except Exception as e:
+                    logger.warning(f"Error fetching email {num}: {e}")
+                    continue
+            
+            mail.logout()
+            return emails
+        except Exception as e:
+            logger.error(f"Error listing emails: {e}")
+            return []
+
+    async def search_emails_by_criteria(self, folder: str, criteria: str, limit: int = 50) -> List[Dict]:
+        """Search emails by AI-determined criteria.
+        
+        Args:
+            folder: Folder name ("inbox", "archived", "all")
+            criteria: Search criteria (e.g., "advertisement", "promotional")
+            limit: Maximum number of results
+            
+        Returns:
+            List of matching email dicts
+        """
+        # Get emails from folder
+        emails = self.list_emails(folder, limit=limit * 2)
+        
+        # Categorize each email and filter by criteria
+        categorized = []
+        for email_data in emails:
+            category = await self.categorize_email(
+                email_data.get('subject', '') + " " + email_data.get('sender', '')
+            )
+            if category and criteria.lower() in category.lower():
+                categorized.append(email_data)
+                if len(categorized) >= limit:
+                    break
+        
+        return categorized
+
+    async def categorize_email(self, email_content: str) -> str:
+        """Use AI to classify email category.
+        
+        Args:
+            email_content: Email subject and/or body text
+            
+        Returns:
+            Category: "advertisement", "promotional", "spam", "important", "newsletter", "notification"
+        """
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=Config.GEMINI_API_KEY
+            )
+            
+            prompt = f"""Categorize this email content into one of these categories:
+- advertisement: Promotional emails, marketing
+- promotional: Sales, deals, offers
+- spam: Obvious spam/junk
+- important: Personal, work-related, urgent
+- newsletter: Subscriptions, updates
+- notification: System notifications, receipts
+
+Email content: {email_content[:300]}
+
+Respond with only the category name."""
+            
+            response = await client.aio.models.generate_content(
+                model="models/gemini-2.0-flash-exp",
+                contents=[types.Content(parts=[types.Part(text=prompt)], role="user")],
+                config=types.GenerateContentConfig(temperature=0.3)
+            )
+            
+            if response.candidates and response.candidates[0].content.parts:
+                category = response.candidates[0].content.parts[0].text.strip().lower()
+                # Map to standard categories
+                if "advertisement" in category or "ad" in category:
+                    return "advertisement"
+                elif "promotional" in category or "promo" in category:
+                    return "promotional"
+                elif "spam" in category:
+                    return "spam"
+                elif "important" in category or "urgent" in category:
+                    return "important"
+                elif "newsletter" in category:
+                    return "newsletter"
+                elif "notification" in category:
+                    return "notification"
+                return category
+            
+            return "unknown"
+        except Exception as e:
+            logger.error(f"Error categorizing email: {e}")
+            return "unknown"
+        finally:
+            if 'client' in locals():
+                client.close()
+
+    def bulk_delete_emails(self, email_ids: List[str]) -> Dict[str, int]:
+        """Delete multiple emails by their IDs.
+        
+        Args:
+            email_ids: List of email message IDs
+            
+        Returns:
+            Dict with 'deleted' count and 'failed' count
+        """
+        deleted = 0
+        failed = 0
+        
+        for email_id in email_ids:
+            if self.delete_email(email_id):
+                deleted += 1
+            else:
+                failed += 1
+        
+        logger.info(f"Bulk deleted {deleted} emails, {failed} failed")
+        return {'deleted': deleted, 'failed': failed}
+
+    def bulk_archive_emails(self, email_ids: List[str]) -> Dict[str, int]:
+        """Archive multiple emails by their IDs.
+        
+        Args:
+            email_ids: List of email message IDs
+            
+        Returns:
+            Dict with 'archived' count and 'failed' count
+        """
+        archived = 0
+        failed = 0
+        
+        for email_id in email_ids:
+            if self.archive_email(email_id):
+                archived += 1
+            else:
+                failed += 1
+        
+        logger.info(f"Bulk archived {archived} emails, {failed} failed")
+        return {'archived': archived, 'failed': failed}

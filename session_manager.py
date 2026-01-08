@@ -28,18 +28,22 @@ class SessionManager:
     - Termination and cleanup
     """
 
-    def __init__(self, db, router=None, function_handlers=None):
+    def __init__(self, db, router=None, function_handlers=None, gmail_handler=None, messaging_handler=None):
         """Initialize Session Manager.
 
         Args:
             db: Database instance for persistence
             router: Optional MessageRouter for inter-agent communication
             function_handlers: Optional dict of function_name -> handler for GeminiLiveClient
+            gmail_handler: Optional GmailHandler for sending email responses
+            messaging_handler: Optional MessagingHandler for sending SMS responses
         """
         self.db = db
         self.router = router  # Will be set after router is created
         # Will be set after handlers are registered
         self.function_handlers = function_handlers or {}
+        self.gmail_handler = gmail_handler
+        self.messaging_handler = messaging_handler
 
         # Session registries
         # session_id -> AgentSession
@@ -179,6 +183,175 @@ class SessionManager:
             )
 
             return session
+
+    async def create_message_session(
+        self,
+        phone_number: str = None,
+        email_address: str = None
+    ) -> AgentSession:
+        """Create a new agent session for messages/emails (no websocket).
+
+        This creates a live Gemini session for text-based communication from messages or emails.
+        The session will timeout after MESSAGE_SESSION_TIMEOUT seconds of inactivity.
+
+        Args:
+            phone_number: Phone number (for SMS/WhatsApp messages)
+            email_address: Email address (for email messages)
+
+        Returns:
+            Created AgentSession instance
+        """
+        async with self._lock:
+            # Determine the identifier (phone or email)
+            identifier = phone_number or email_address
+            if not identifier:
+                raise ValueError("Either phone_number or email_address must be provided")
+            
+            # Authenticate to determine permission level
+            permission_level = authenticate_phone_number(identifier) if phone_number else PermissionLevel.FULL
+            
+            # Check if there's already an active Máté main session
+            if permission_level == PermissionLevel.FULL:
+                mate_main = await self.get_mate_main_session()
+                if mate_main and mate_main.is_active():
+                    # Update activity and return existing session
+                    if hasattr(mate_main, 'update_activity'):
+                        mate_main.update_activity()
+                    return mate_main
+
+            # Generate unique session ID
+            session_id = generate_session_id()
+            
+            # Determine session name - use "Call with Máté (main)" for consistency with phone calls
+            session_name = "Call with Máté (main)"
+            mate_main = await self.get_mate_main_session()
+            if mate_main and mate_main.is_active():
+                # Already has main session - this is a secondary one
+                import uuid
+                suffix = uuid.uuid4().hex[:4]
+                session_name = f"Call with Máté ({suffix})"
+            
+            # Create GeminiLiveClient with filtered functions
+            gemini_client = await self._create_gemini_client(permission_level)
+            
+            # Set up response handler for message sessions
+            # Buffer responses to send complete messages
+            response_buffer = []
+            
+            async def handle_text_response(text: str):
+                """Handle text response from Gemini and send back via appropriate medium."""
+                try:
+                    # Buffer the response text
+                    response_buffer.append(text)
+                    
+                    # Check if response is complete (ends with punctuation or is long enough)
+                    combined = ''.join(response_buffer)
+                    if any(combined.rstrip().endswith(p) for p in ['.', '!', '?']) or len(response_buffer) > 10:
+                        # Send complete response
+                        full_response = ''.join(response_buffer)
+                        response_buffer.clear()
+                        
+                        # Determine medium based on identifier
+                        if email_address:
+                            # Send via email
+                            if self.gmail_handler:
+                                await self.gmail_handler.send_email(
+                                    to_email=email_address,
+                                    subject="TARS Reply",
+                                    body=full_response
+                                )
+                        elif phone_number and self.messaging_handler:
+                            # Send via SMS
+                            self.messaging_handler.send_message(
+                                to_number=phone_number,
+                                message_body=full_response,
+                                medium='sms'
+                            )
+                except Exception as e:
+                    logger.error(f"Error handling message session response: {e}")
+            
+            gemini_client.on_text_response = handle_text_response
+            
+            # Connect to Gemini Live (text-based, no audio)
+            await gemini_client.connect(permission_level=permission_level.value)
+            
+            # Create session object (no websocket for message sessions)
+            session = AgentSession(
+                session_id=session_id,
+                call_sid=f"msg_{session_id}",  # Fake call_sid for message sessions
+                session_name=session_name,
+                phone_number=phone_number or email_address,
+                permission_level=permission_level,
+                session_type=SessionType.INBOUND_USER if permission_level == PermissionLevel.FULL else SessionType.INBOUND_UNKNOWN,
+                gemini_client=gemini_client,
+                websocket=None,  # No websocket for message sessions
+                stream_sid=f"stream_{session_id}",  # Fake stream_sid
+                purpose=None,
+                parent_session_id=None
+            )
+            
+            # Mark as message session and activate
+            session.platform = 'message'
+            session.last_activity_at = datetime.now()
+            session.activate()  # Mark as active
+            
+            # Register session
+            self.sessions[session_id] = session
+            
+            # Track by identifier
+            if identifier not in self.phone_to_sessions:
+                self.phone_to_sessions[identifier] = []
+            self.phone_to_sessions[identifier].append(session_id)
+            
+            # Persist to database
+            self.db.add_agent_session(session.to_dict())
+            
+            # Register with router
+            if self.router:
+                await self.router.register_session(session)
+            
+            # Inject session context
+            self._inject_session_context(session)
+            
+            # Start timeout task
+            asyncio.create_task(self._monitor_message_session_timeout(session))
+            
+            logger.info(
+                f"Created message session {session_id[:8]}: {session_name} "
+                f"({permission_level.value})"
+            )
+            
+            return session
+
+    async def _monitor_message_session_timeout(self, session: AgentSession):
+        """Monitor message session for timeout and close if inactive.
+        
+        Args:
+            session: AgentSession to monitor
+        """
+        timeout_seconds = Config.MESSAGE_SESSION_TIMEOUT
+        
+        while session.is_active():
+            await asyncio.sleep(30)  # Check every 30 seconds
+            
+            if not session.is_active():
+                break
+            
+            # Check if session has been inactive too long
+            if hasattr(session, 'last_activity_at') and session.last_activity_at:
+                time_since_activity = (datetime.now() - session.last_activity_at).total_seconds()
+                if time_since_activity >= timeout_seconds:
+                    logger.info(f"Message session {session.session_id[:8]} timed out after {timeout_seconds}s inactivity")
+                    await self.terminate_session(session.session_id, reason="timeout")
+                    break
+            else:
+                # If no activity tracking, use created_at
+                if session.created_at:
+                    time_since_creation = (datetime.now() - session.created_at).total_seconds()
+                    if time_since_creation >= timeout_seconds:
+                        logger.info(f"Message session {session.session_id[:8]} timed out after {timeout_seconds}s")
+                        await self.terminate_session(session.session_id, reason="timeout")
+                        break
 
     async def _determine_session_identity(
         self,
