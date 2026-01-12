@@ -23,10 +23,18 @@ GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=models/gemini-2.5-flash-native-audio-preview-12-2025
 GEMINI_VOICE=Puck
 
-# Gmail Configuration (Required for email console) - LINES 53-55
-GMAIL_USER=your_gmail@gmail.com
+# Gmail Configuration (Required for email console) - LINES 53-58
+# GMAIL_USER is used for IMAP operations (checking, archiving, deleting emails)
+GMAIL_USER=matedort1@gmail.com
 GMAIL_APP_PASSWORD=your_gmail_app_password_here
-TARGET_EMAIL=your_target_email@gmail.com
+
+# TARS Email Configuration (for sending emails FROM TARS)
+# GMAIL_TARS_EMAIL is used for SMTP operations (sending emails)
+GMAIL_TARS_EMAIL=your_tars_email@gmail.com
+GMAIL_TARS_APP_PASSWORD=your_tars_email_app_password_here
+
+# TARGET_EMAIL is the user's email address (e.g., matedort1@gmail.com) - emails FROM this address are processed
+TARGET_EMAIL=matedort1@gmail.com
 
 # ============================================================
 # NETWORK & WEBHOOK CONFIGURATION
@@ -109,9 +117,11 @@ TARGET_NAME=Máté Dort
 3. **TWILIO_PHONE_NUMBER** - Your Twilio phone number
 4. **TARGET_PHONE_NUMBER** - Your personal phone number (for authentication)
 5. **GEMINI_API_KEY** - Google Gemini API key
-6. **GMAIL_USER** - Gmail account for sending emails
-7. **GMAIL_APP_PASSWORD** - Gmail app password
-8. **TARGET_EMAIL** - Your email address (for receiving emails)
+6. **GMAIL_USER** - Gmail account for IMAP operations (checking, archiving, deleting emails) - e.g., matedort1@gmail.com
+7. **GMAIL_APP_PASSWORD** - Gmail app password for GMAIL_USER account
+8. **GMAIL_TARS_EMAIL** - TARS email address for SMTP operations (sending emails FROM TARS)
+9. **GMAIL_TARS_APP_PASSWORD** - Gmail app password for TARS email account
+10. **TARGET_EMAIL** - User's email address (e.g., matedort1@gmail.com) - emails FROM this address are processed by TARS
 
 ### Optional Settings (with defaults)
 9. **GEMINI_MODEL** - Gemini model name (default: `models/gemini-2.5-flash-native-audio-preview-12-2025`)

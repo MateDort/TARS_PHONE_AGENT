@@ -41,6 +41,7 @@ Be conversational, friendly, and helpful."""
         self.session = None
         self._session_context = None  # Store the context manager
         self.is_connected = False
+        self._receive_task = None  # Track receive loop task to avoid duplicates
         
         # Audio callbacks
         self.on_audio_response: Optional[Callable] = None
@@ -158,9 +159,21 @@ Be conversational, friendly, and helpful."""
             
             self.is_connected = True
             logger.info("Connected to Gemini Live Audio")
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "gemini_live_client.py:connect:success", "message": "Connection established", "data": {"is_connected": self.is_connected, "has_session": self.session is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             
-            # Start receiving responses
-            asyncio.create_task(self._receive_loop())
+            # Start receiving responses (only if not already running)
+            if self._receive_task is None or self._receive_task.done():
+                self._receive_task = asyncio.create_task(self._receive_loop())
+                logger.debug("Started new receive loop task")
+            else:
+                logger.debug("Receive loop already running, not starting new one")
             
         except Exception as e:
             logger.error(f"Failed to connect to Gemini Live: {e}")
@@ -211,6 +224,14 @@ Be conversational, friendly, and helpful."""
             )
         except Exception as e:
             logger.error(f"Error sending audio: {e}")
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "gemini_live_client.py:send_audio:error", "message": "Error sending audio", "data": {"error": str(e), "error_type": type(e).__name__, "is_connected": self.is_connected, "has_session": self.session is not None, "contains_1008": "1008" in str(e), "contains_1011": "1011" in str(e)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             raise
     
     async def send_text(self, text: str, end_of_turn: bool = True):
@@ -380,9 +401,25 @@ Be conversational, friendly, and helpful."""
                     
         except Exception as e:
             logger.error(f"Error in receive loop: {e}")
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gemini_live_client.py:_receive_loop:error", "message": "Error in receive loop", "data": {"error": str(e), "error_type": type(e).__name__, "is_connected": self.is_connected, "has_session_context": self._session_context is not None, "contains_1008": "1008" in str(e), "contains_1011": "1011" in str(e)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             
             # Only attempt reconnection if this wasn't a clean shutdown
-            should_reconnect = self.is_connected and self._session_context and "1008" in str(e)
+            should_reconnect = self.is_connected and self._session_context and ("1008" in str(e) or "1011" in str(e))
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gemini_live_client.py:_receive_loop:should_reconnect", "message": "Reconnection decision", "data": {"should_reconnect": should_reconnect, "is_connected": self.is_connected, "has_session_context": self._session_context is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             self.is_connected = False
             
             if should_reconnect:
@@ -402,8 +439,27 @@ Be conversational, friendly, and helpful."""
                     # Reconnect
                     await self.connect()
                     logger.info("Successfully reconnected to Gemini Live")
+                    # #region debug log
+                    try:
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json
+                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "gemini_live_client.py:_receive_loop:reconnect_success", "message": "Reconnection successful", "data": {"is_connected": self.is_connected, "has_session": self.session is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                    except:
+                        pass
+                    # #endregion
+                    # After reconnection, exit this loop - the new receive loop started by connect() will handle responses
+                    # This prevents duplicate receive loops
+                    return
                 except Exception as reconnect_error:
                     logger.error(f"Failed to reconnect: {reconnect_error}")
+                    # #region debug log
+                    try:
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json
+                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "gemini_live_client.py:_receive_loop:reconnect_failed", "message": "Reconnection failed", "data": {"error": str(reconnect_error), "is_connected": self.is_connected}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                    except:
+                        pass
+                    # #endregion
     
     async def _handle_function_calls(self, tool_call):
         """Handle function calls from Gemini.

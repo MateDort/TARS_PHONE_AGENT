@@ -242,40 +242,14 @@ class MessagingHandler:
                 permission_level
             )
 
-            # #region debug log
-            try:
-                with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:process_incoming_message:before_send", "message": "About to send reply", "data": {
-                            "to_number": from_number, "response_length": len(response_text), "response_preview": response_text[:100]}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-
             # Check if response is long and should be auto-routed to email
             response_length = len(response_text)
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:process_incoming_message:long_message_check", "message": "Checking long message routing", "data": {"response_length": response_length, "threshold": Config.LONG_MESSAGE_THRESHOLD, "medium": medium, "auto_email_routing": Config.AUTO_EMAIL_ROUTING, "has_gmail_handler": self.gmail_handler is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             should_route_to_email = (
                 Config.AUTO_EMAIL_ROUTING and
                 response_length >= Config.LONG_MESSAGE_THRESHOLD and
                 medium in ['sms', 'whatsapp'] and
                 self.gmail_handler is not None
             )
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "messaging_handler.py:process_incoming_message:routing_decision", "message": "Routing decision made", "data": {"should_route_to_email": should_route_to_email, "reason": "medium_check" if medium not in ['sms', 'whatsapp'] else "length_check" if response_length < Config.LONG_MESSAGE_THRESHOLD else "config_check" if not Config.AUTO_EMAIL_ROUTING else "gmail_handler_check" if not self.gmail_handler else "routing_enabled"}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
 
             if should_route_to_email:
                 # Route long message to email instead
@@ -523,14 +497,6 @@ class MessagingHandler:
         Returns:
             Function result as string
         """
-        # #region debug log
-        try:
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "messaging_handler.py:_execute_function:entry", "message": "Function execution started", "data": {"function_name": function_name, "args": str(args)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-        except:
-            pass
-        # #endregion
         try:
             from sub_agents_tars import get_all_agents
 
@@ -890,25 +856,9 @@ class MessagingHandler:
         try:
             # Check if to_email is a contact name and look up email address
             recipient_email = to_email
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:send_email:entry", "message": "send_email called", "data": {"to_email": to_email, "has_at": '@' in to_email, "subject": subject[:50] if subject else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             if '@' not in to_email:
                 # Might be a contact name - try to look it up
                 contact = self.db.search_contact(to_email)
-                # #region debug log
-                try:
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:send_email:contact_lookup", "message": "Contact lookup result", "data": {"to_email": to_email, "contact_found": contact is not None, "has_email": contact.get('email') if contact else None, "target_email_available": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
                 if contact and contact.get('email'):
                     recipient_email = contact['email']
                     logger.info(f"Found contact '{to_email}', using email: {recipient_email}")
@@ -918,14 +868,6 @@ class MessagingHandler:
                     if Config.TARGET_EMAIL:
                         recipient_email = Config.TARGET_EMAIL
                         logger.info(f"Using TARGET_EMAIL as fallback: {recipient_email}")
-                        # #region debug log
-                        try:
-                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                                import json
-                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "messaging_handler.py:send_email:fallback", "message": "Using TARGET_EMAIL fallback", "data": {"to_email": to_email, "fallback_email": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                        except:
-                            pass
-                        # #endregion
                     else:
                         return None
 

@@ -237,36 +237,49 @@ class SessionManager:
             # Set up response handler for message sessions
             # Buffer responses to send complete messages
             response_buffer = []
+            response_timeout_task = None
             
             async def handle_text_response(text: str):
                 """Handle text response from Gemini and send back via appropriate medium."""
+                nonlocal response_timeout_task, response_buffer
                 try:
                     # Buffer the response text
                     response_buffer.append(text)
                     
-                    # Check if response is complete (ends with punctuation or is long enough)
-                    combined = ''.join(response_buffer)
-                    if any(combined.rstrip().endswith(p) for p in ['.', '!', '?']) or len(response_buffer) > 10:
-                        # Send complete response
-                        full_response = ''.join(response_buffer)
-                        response_buffer.clear()
-                        
-                        # Determine medium based on identifier
-                        if email_address:
-                            # Send via email
-                            if self.gmail_handler:
-                                await self.gmail_handler.send_email(
-                                    to_email=email_address,
-                                    subject="TARS Reply",
-                                    body=full_response
-                                )
-                        elif phone_number and self.messaging_handler:
-                            # Send via SMS
-                            self.messaging_handler.send_message(
-                                to_number=phone_number,
-                                message_body=full_response,
-                                medium='sms'
-                            )
+                    # Cancel any existing timeout task
+                    if response_timeout_task and not response_timeout_task.done():
+                        response_timeout_task.cancel()
+                    
+                    # Set a timeout to send the response if no more text comes
+                    async def send_buffered_response():
+                        try:
+                            await asyncio.sleep(1.5)  # Wait 1.5 seconds for more text
+                            if response_buffer:
+                                full_response = ''.join(response_buffer)
+                                response_buffer.clear()
+                                
+                                # Determine medium based on identifier
+                                if email_address:
+                                    # Send via email (run in thread since send_email is sync)
+                                    if self.gmail_handler:
+                                        await asyncio.to_thread(
+                                            self.gmail_handler.send_email,
+                                            email_address,
+                                            "TARS Reply",
+                                            full_response
+                                        )
+                                elif phone_number and self.messaging_handler:
+                                    # Send via SMS
+                                    self.messaging_handler.send_message(
+                                        to_number=phone_number,
+                                        message_body=full_response,
+                                        medium='sms'
+                                    )
+                        except asyncio.CancelledError:
+                            # Task was cancelled, ignore
+                            pass
+                    
+                    response_timeout_task = asyncio.create_task(send_buffered_response())
                 except Exception as e:
                     logger.error(f"Error handling message session response: {e}")
             
@@ -692,14 +705,6 @@ class SessionManager:
         """
         # Find session to resume - need to check ALL sessions (including suspended)
         session = None
-        # #region debug log
-        try:
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "session_manager.py:resume_session:entry", "message": "Resume session called", "data": {"session_id": session_id, "session_name": session_name, "total_sessions": len(self.sessions)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-        except:
-            pass
-        # #endregion
         if session_id:
             session = await self.get_session(session_id)
         elif session_name:
@@ -709,27 +714,10 @@ class SessionManager:
                 name = sess.session_name.lower()
                 if name == target or target in name:
                     session = sess
-                    # #region debug log
-                    try:
-                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                            import json
-                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "session_manager.py:resume_session:found_by_name", "message": "Session found by name", "data": {"session_name": session_name, "found_session_id": sess.session_id, "session_status": sess.status.value, "is_active": sess.is_active()}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                    except:
-                        pass
-                    # #endregion
                     break
 
         if not session:
             logger.warning(f"Session not found for resumption: {session_id or session_name}")
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    all_session_names = [s.session_name for s in self.sessions.values()]
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "session_manager.py:resume_session:not_found", "message": "Session not found", "data": {"session_id": session_id, "session_name": session_name, "available_sessions": all_session_names}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             return None
 
         # Check if session is resumable

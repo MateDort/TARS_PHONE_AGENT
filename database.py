@@ -881,14 +881,6 @@ class Database:
             # Search for conversations on that date
             start_datetime = datetime.combine(target_date, datetime.min.time())
             end_datetime = datetime.combine(target_date, datetime.max.time())
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "database.py:search_conversations_by_date:query_params", "message": "Date search query parameters", "data": {"query": date_str, "parsed_date": target_date.isoformat(), "start": start_datetime.isoformat(), "end": end_datetime.isoformat(), "limit": limit}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
 
             cursor = self.conn.execute(
                 """SELECT * FROM conversations
@@ -897,15 +889,6 @@ class Database:
                 (start_datetime.isoformat(), end_datetime.isoformat(), limit)
             )
             messages = [dict(row) for row in cursor.fetchall()]
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    sample_timestamps = [m.get('timestamp', '')[:19] for m in messages[:5]] if messages else []
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "database.py:search_conversations_by_date:results", "message": "Date search results", "data": {"query": date_str, "result_count": len(messages), "sample_timestamps": sample_timestamps}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             return list(reversed(messages))
 
         except Exception as e:
@@ -926,25 +909,9 @@ class Database:
         """
         try:
             # Generate embedding for topic
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "database.py:search_conversations_by_topic:entry", "message": "Topic search started", "data": {"topic": topic, "limit": limit, "threshold": threshold}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             topic_embedding_json = self.generate_embedding(topic, api_key)
             if not topic_embedding_json:
                 logger.warning("Failed to generate embedding for topic")
-                # #region debug log
-                try:
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "database.py:search_conversations_by_topic:embedding_failed", "message": "Embedding generation failed", "data": {"topic": topic}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
                 return []
 
             topic_embedding = json.loads(topic_embedding_json)
@@ -956,14 +923,6 @@ class Database:
                 "SELECT * FROM conversations WHERE embedding IS NOT NULL"
             )
             conversations = [dict(row) for row in cursor.fetchall()]
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "database.py:search_conversations_by_topic:conversations_found", "message": "Conversations with embeddings", "data": {"topic": topic, "conversations_with_embeddings": len(conversations), "total_conversations": len(conversations)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
 
             # Calculate similarity for each conversation
             results = []

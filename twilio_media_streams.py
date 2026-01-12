@@ -55,6 +55,8 @@ class TwilioMediaStreamsHandler:
         self.is_reconnecting = False
         # Buffer up to 50 packets (~1 second of audio)
         self.max_buffer_size = 50
+        # Store active call client for reconnection checks
+        self._active_call_client = None
 
     def set_main_loop(self, loop):
         """Set the main event loop for thread-safe scheduling from Flask threads."""
@@ -205,16 +207,6 @@ class TwilioMediaStreamsHandler:
         @self.app.route('/webhook/sms', methods=['POST'])
         def sms_webhook():
             """Handle incoming SMS messages."""
-            # #region debug log
-            try:
-                with open('/Users/matedort/phone-call-agent/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "twilio_media_streams.py:sms_webhook:entry", "message": "SMS webhook called", "data": {
-                            "has_messaging_handler": hasattr(self, 'messaging_handler'), "event_loop_running": asyncio.get_running_loop() if asyncio._get_running_loop() else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-
             from_number = request.form.get('From')
             to_number = request.form.get('To')
             message_body = request.form.get('Body')
@@ -358,6 +350,7 @@ class TwilioMediaStreamsHandler:
 
                         # Use session's dedicated Gemini client (already configured with permissions)
                         call_gemini_client = session.gemini_client
+                        self._active_call_client = call_gemini_client  # Store for reconnection
 
                         # Connect to Gemini with permission level
                         print(f"   Connecting to Gemini Live...")
@@ -571,10 +564,24 @@ class TwilioMediaStreamsHandler:
                             )
 
                         except Exception as e:
+                            # #region debug log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "twilio_media_streams.py:handle_media_stream:audio_error", "message": "Error processing audio", "data": {"error": str(e), "error_type": type(e).__name__, "is_reconnecting": self.is_reconnecting, "is_connected": call_gemini_client.is_connected if call_gemini_client else None, "contains_1008": "1008" in str(e), "contains_1011": "1011" in str(e)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                            except:
+                                pass
+                            # #endregion
                             # If connection error, trigger reconnection
-                            if "Not connected" in str(e) or "1008" in str(e):
+                            if "Not connected" in str(e) or "1008" in str(e) or "1011" in str(e):
                                 if not self.is_reconnecting:
                                     self.is_reconnecting = True
+                                    # #region debug log
+                                    try:
+                                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "twilio_media_streams.py:handle_media_stream:start_reconnect", "message": "Starting reconnection", "data": {"is_reconnecting": self.is_reconnecting, "buffer_size": len(self.audio_buffer)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                                    except:
+                                        pass
+                                    # #endregion
                                     asyncio.create_task(
                                         self._reconnect_gemini())
                                 # Buffer this audio
@@ -590,6 +597,8 @@ class TwilioMediaStreamsHandler:
                     elif event == 'stop':
                         # Stream ended
                         logger.info(f"Stream stopped: {stream_sid}")
+                        # Clear active client reference
+                        self._active_call_client = None
 
                         # Flush any remaining buffered transcripts
                         try:
@@ -658,19 +667,37 @@ class TwilioMediaStreamsHandler:
         try:
             logger.warning(
                 f"Starting reconnection... (buffer size: {len(self.audio_buffer)})")
+            # #region debug log
+            try:
+                active_client = self._active_call_client or self.gemini_client
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:start", "message": "Reconnection started", "data": {"buffer_size": len(self.audio_buffer), "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
 
-            # Wait a brief moment for connection to stabilize
-            await asyncio.sleep(0.5)
+            # Wait a brief moment for connection to stabilize and reconnection to start
+            await asyncio.sleep(1.0)  # Increased from 0.5 to give reconnection more time to start
 
             # The gemini_client handles reconnection in its receive_loop
-            # Wait for it to complete
-            max_wait = 5  # Max 5 seconds
+            # Wait for it to complete - increased timeout to handle slower reconnections
+            # Use the active call client, not the main client
+            active_client = self._active_call_client or self.gemini_client
+            max_wait = 10  # Max 10 seconds (increased from 5)
             waited = 0
-            while not self.gemini_client.is_connected and waited < max_wait:
+            while not active_client.is_connected and waited < max_wait:
                 await asyncio.sleep(0.1)
                 waited += 0.1
+                # #region debug log
+                if waited % 1.0 < 0.1:  # Log every second
+                    try:
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:waiting", "message": "Waiting for reconnection", "data": {"waited": round(waited, 1), "max_wait": max_wait, "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                    except:
+                        pass
+                # #endregion
 
-            if self.gemini_client.is_connected:
+            if active_client.is_connected:
                 logger.info(
                     f"Reconnection complete, flushing {len(self.audio_buffer)} buffered packets")
 
@@ -680,7 +707,7 @@ class TwilioMediaStreamsHandler:
 
                 for audio_chunk in buffer_copy:
                     try:
-                        await self.gemini_client.send_audio(
+                        await active_client.send_audio(
                             audio_chunk,
                             mime_type="audio/pcm;rate=24000"
                         )
@@ -691,15 +718,44 @@ class TwilioMediaStreamsHandler:
                         break
 
                 logger.info("Buffer flushed successfully")
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:success", "message": "Reconnection successful", "data": {"is_connected": active_client.is_connected, "buffer_flushed": True}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
             else:
                 logger.error("Reconnection timed out")
+                # #region debug log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:timeout", "message": "Reconnection timed out", "data": {"waited": round(waited, 1), "max_wait": max_wait, "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+                except:
+                    pass
+                # #endregion
                 self.audio_buffer.clear()  # Clear buffer on timeout
 
         except Exception as e:
             logger.error(f"Error in reconnection handler: {e}")
+            # #region debug log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "twilio_media_streams.py:_reconnect_gemini:error", "message": "Reconnection handler error", "data": {"error": str(e), "is_reconnecting": self.is_reconnecting}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
             self.audio_buffer.clear()
         finally:
             self.is_reconnecting = False
+            # #region debug log
+            try:
+                active_client = self._active_call_client or self.gemini_client
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "twilio_media_streams.py:_reconnect_gemini:finally", "message": "Reconnection handler finished", "data": {"is_reconnecting": self.is_reconnecting, "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
+            except:
+                pass
+            # #endregion
 
     async def start_websocket_server(self, host: str = '0.0.0.0', port: int = 5001):
         """Start WebSocket server for Media Streams.

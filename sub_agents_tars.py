@@ -641,14 +641,6 @@ class ContactsAgent(SubAgent):
 
         elif action == "list":
             contacts = self.db.get_contacts()
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "sub_agents_tars.py:ContactsAgent:list", "message": "List contacts called", "data": {"contact_count": len(contacts), "contact_names": [c['name'] for c in contacts]}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             if not contacts:
                 return "You have no contacts saved, sir."
 

@@ -51,8 +51,14 @@ class Config:
     WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', 'whatsapp:+14155238886')
 
     # Gmail Configuration (for console interface)
-    GMAIL_USER = os.getenv('GMAIL_USER', '')
-    GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '')
+    # GMAIL_USER is used for IMAP operations (checking, archiving, deleting emails)
+    GMAIL_USER = os.getenv('GMAIL_USER', '').strip()
+    GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD', '').strip().replace(' ', '')  # Remove spaces from app password
+    
+    # TARS Email Configuration (for sending emails FROM TARS)
+    # GMAIL_TARS_EMAIL is used for SMTP operations (sending emails)
+    GMAIL_TARS_EMAIL = os.getenv('GMAIL_TARS_EMAIL', '').strip()
+    GMAIL_TARS_APP_PASSWORD = os.getenv('GMAIL_TARS_APP_PASSWORD', '').strip().replace(' ', '')  # Remove spaces from app password
 
     # Messaging Platform Selection
     # Options: gmail, sms, whatsapp
