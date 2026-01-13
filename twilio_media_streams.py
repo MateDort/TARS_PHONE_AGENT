@@ -444,7 +444,7 @@ class TwilioMediaStreamsHandler:
                                         
                                         if any(response in user_text_lower for response in affirmative_responses):
                                             # Get session to check for pending long response
-                                            session = self.session_manager.get_session_by_call_sid(call_sid)
+                                            session = await self.session_manager.get_session_by_call_sid(call_sid)
                                             if session and hasattr(session, '_pending_long_response') and session._pending_long_response:
                                                 full_response = session._pending_long_response
                                                 response_chars = getattr(session, '_pending_response_chars', len(full_response))
@@ -520,7 +520,7 @@ class TwilioMediaStreamsHandler:
                                                 logger.info(f"Long response detected during call ({total_chars} chars, threshold: {Config.LONG_MESSAGE_THRESHOLD})")
                                                 
                                                 # Get session to send follow-up
-                                                session = self.session_manager.get_session_by_call_sid(call_sid)
+                                                session = await self.session_manager.get_session_by_call_sid(call_sid)
                                                 if session and session.gemini_client:
                                                     # Generate brief summary using Gemini
                                                     # Include character count in the spoken response
