@@ -52,6 +52,10 @@ Be conversational, friendly, and helpful."""
         self._ai_console_buffer = []
         self._user_console_buffer = []
         
+        # Full response buffering for complete response printing
+        self._full_response_buffer = []
+        self._response_timeout_task = None
+        
     def register_function(self, declaration: Dict, handler: Callable):
         """Register a function for the agent to call.
         
@@ -355,14 +359,37 @@ Be conversational, friendly, and helpful."""
                             if response.server_content.output_transcription:
                                 text = response.server_content.output_transcription.text
 
-                                # Buffer for console output
+                                # Add to full response buffer
+                                self._full_response_buffer.append(text)
+                                
+                                # Cancel existing timeout task
+                                if self._response_timeout_task and not self._response_timeout_task.done():
+                                    self._response_timeout_task.cancel()
+                                
+                                # Set timeout to print full response when complete
+                                async def print_full_response():
+                                    try:
+                                        await asyncio.sleep(2.0)  # Wait 2 seconds for more text
+                                        if self._full_response_buffer:
+                                            full_response = ''.join(self._full_response_buffer)
+                                            total_chars = len(full_response)
+                                            
+                                            # Print full response with character count
+                                            print(f"\n🤖 TARS ({total_chars} chars): {full_response}")
+                                            logger.info(f"AI (full response, {total_chars} chars): {full_response}")
+                                            
+                                            self._full_response_buffer.clear()
+                                    except asyncio.CancelledError:
+                                        pass
+                                
+                                self._response_timeout_task = asyncio.create_task(print_full_response())
+                                
+                                # Keep sentence buffer for real-time feedback (optional, just for debug)
                                 self._ai_console_buffer.append(text)
                                 combined = ''.join(self._ai_console_buffer)
-
-                                # Print complete sentences only
                                 if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(self._ai_console_buffer) > 15:
-                                    print(f"\n🤖 TARS: {combined}")
-                                    logger.info(f"AI: {combined}")
+                                    # Just log for debugging, don't print (full response will be printed)
+                                    logger.debug(f"AI sentence: {combined}")
                                     self._ai_console_buffer.clear()
 
                                 # Always call the callback (it has its own buffering)

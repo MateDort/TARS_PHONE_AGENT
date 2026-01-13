@@ -411,6 +411,10 @@ class TwilioMediaStreamsHandler:
                         # Buffer for accumulating sentence fragments
                         user_buffer = []
                         ai_buffer = []
+                        
+                        # Full response buffer for length checking
+                        full_response_buffer = []
+                        response_check_task = None
 
                         async def log_user_transcript(text: str):
                             """Log user's spoken text to database, batching into sentences."""
@@ -433,6 +437,39 @@ class TwilioMediaStreamsHandler:
                                         )
                                         logger.debug(
                                             f"Logged user sentence for call {call_sid}: {combined[:50]}...")
+                                        
+                                        # Check if user confirmed sending full response via email
+                                        user_text_lower = combined.strip().lower()
+                                        affirmative_responses = ['yes', 'yeah', 'yep', 'sure', 'okay', 'ok', 'send it', 'send', 'please', 'go ahead']
+                                        
+                                        if any(response in user_text_lower for response in affirmative_responses):
+                                            # Get session to check for pending long response
+                                            session = self.session_manager.get_session_by_call_sid(call_sid)
+                                            if session and hasattr(session, '_pending_long_response') and session._pending_long_response:
+                                                full_response = session._pending_long_response
+                                                response_chars = getattr(session, '_pending_response_chars', len(full_response))
+                                                
+                                                logger.info(f"User confirmed sending full response ({response_chars} chars) via email")
+                                                
+                                                # Send full response via email
+                                                if self.messaging_handler and self.messaging_handler.gmail_handler:
+                                                    await self.messaging_handler.gmail_handler.send_detailed_response(
+                                                        session_id=session.session_id,
+                                                        content=full_response,
+                                                        response_type="Detailed Response"
+                                                    )
+                                                    
+                                                    # Clear pending response
+                                                    session._pending_long_response = None
+                                                    session._pending_response_chars = None
+                                                    
+                                                    # Confirm to user via audio
+                                                    if session.gemini_client:
+                                                        await session.gemini_client.send_text(
+                                                            "I've sent the full detailed response to your email.",
+                                                            end_of_turn=True
+                                                        )
+                                                
                                         user_buffer.clear()
                             except Exception as e:
                                 logger.error(
@@ -440,13 +477,14 @@ class TwilioMediaStreamsHandler:
 
                         async def log_ai_response(text: str):
                             """Log AI's spoken response to database, batching into sentences."""
+                            nonlocal full_response_buffer, response_check_task
+                            
                             try:
                                 if not text.strip():
                                     return
 
+                                # Existing sentence logging
                                 ai_buffer.append(text)
-
-                                # Check if this completes a sentence (ends with punctuation or is long enough)
                                 combined = ''.join(ai_buffer)
                                 if any(combined.rstrip().endswith(p) for p in ['.', '!', '?', '。']) or len(ai_buffer) > 15:
                                     if hasattr(self, 'db') and self.db:
@@ -460,6 +498,53 @@ class TwilioMediaStreamsHandler:
                                         logger.debug(
                                             f"Logged AI sentence for call {call_sid}: {combined[:50]}...")
                                         ai_buffer.clear()
+                                
+                                # Add to full response buffer
+                                full_response_buffer.append(text)
+                                
+                                # Cancel existing check task
+                                if response_check_task and not response_check_task.done():
+                                    response_check_task.cancel()
+                                
+                                # Set timeout to check response when complete
+                                async def check_and_handle_long_response():
+                                    try:
+                                        await asyncio.sleep(2.0)  # Wait 2 seconds for response to complete
+                                        if full_response_buffer:
+                                            full_response = ''.join(full_response_buffer)
+                                            total_chars = len(full_response)
+                                            full_response_buffer.clear()
+                                            
+                                            # Check if response is long (>= 500 chars)
+                                            if total_chars >= Config.LONG_MESSAGE_THRESHOLD:
+                                                logger.info(f"Long response detected during call ({total_chars} chars, threshold: {Config.LONG_MESSAGE_THRESHOLD})")
+                                                
+                                                # Get session to send follow-up
+                                                session = self.session_manager.get_session_by_call_sid(call_sid)
+                                                if session and session.gemini_client:
+                                                    # Generate brief summary using Gemini
+                                                    # Include character count in the spoken response
+                                                    summary_prompt = f"""I just gave a response that was {total_chars} characters long (the threshold is {Config.LONG_MESSAGE_THRESHOLD} characters). 
+
+Please say: "That response was {total_chars} characters. Here's a brief summary: [2-3 sentence summary of the key points]. Would you like me to send you the full detailed response via email?"
+
+Keep it concise and natural for speaking."""
+                                                    
+                                                    # Send summary request (this will generate audio)
+                                                    await session.gemini_client.send_text(summary_prompt, end_of_turn=True)
+                                                    
+                                                    # Store full response for potential email sending
+                                                    session._pending_long_response = full_response
+                                                    session._pending_response_chars = total_chars
+                                                    logger.info(f"Stored long response ({total_chars} chars) for potential email sending")
+                                            
+                                    except asyncio.CancelledError:
+                                        pass
+                                    except Exception as e:
+                                        logger.error(f"Error checking long response: {e}")
+                                
+                                response_check_task = asyncio.create_task(check_and_handle_long_response())
+                                
                             except Exception as e:
                                 logger.error(f"Error logging AI response: {e}")
 
