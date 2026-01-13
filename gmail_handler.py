@@ -30,42 +30,43 @@ class GmailHandler:
         self.messaging_handler = messaging_handler
         self.session_manager = session_manager
         
-        # IMAP credentials for checking emails (TARS email inbox - where messages are received)
-        self.check_email_user = Config.GMAIL_TARS_EMAIL or Config.GMAIL_USER  # TARS email for receiving, fallback to GMAIL_USER
-        self.check_email_pass = Config.GMAIL_TARS_APP_PASSWORD or Config.GMAIL_APP_PASSWORD  # App password for TARS email, fallback to GMAIL_APP_PASSWORD
-        
-        # IMAP credentials for archiving/deleting emails (user's email inbox - matedort1@gmail.com)
+        # All email operations use matedort1@gmail.com
+        # IMAP credentials (for checking, archiving, deleting emails)
         self.email_user = Config.GMAIL_USER  # matedort1@gmail.com
         self.email_pass = Config.GMAIL_APP_PASSWORD  # App password for matedort1@gmail.com
         
-        # SMTP credentials (for sending emails FROM TARS)
-        self.tars_email = Config.GMAIL_TARS_EMAIL or Config.GMAIL_USER  # TARS email, fallback to GMAIL_USER
-        self.tars_email_pass = Config.GMAIL_TARS_APP_PASSWORD or Config.GMAIL_APP_PASSWORD  # App password for TARS email, fallback to GMAIL_APP_PASSWORD
+        # SMTP credentials (for sending emails FROM matedort1@gmail.com as TARS)
+        self.tars_email = Config.GMAIL_USER  # Use same email for sending
+        self.tars_email_pass = Config.GMAIL_APP_PASSWORD  # Use same password for sending
+        
+        # Legacy variables for compatibility (all point to same credentials)
+        self.check_email_user = self.email_user
+        self.check_email_pass = self.email_pass
         
         self.running = False
         self.thread_id = None  # Main TARS console thread
 
-        if not self.check_email_user or not self.check_email_pass:
+        if not self.email_user or not self.email_pass:
             logger.warning(
                 "Gmail credentials not set. Gmail Console disabled.")
+            if not Config.GMAIL_USER:
+                logger.warning(
+                    "GMAIL_USER not set. Please set GMAIL_USER and GMAIL_APP_PASSWORD in your .env file.")
+            elif not Config.GMAIL_APP_PASSWORD:
+                logger.warning(
+                    f"GMAIL_APP_PASSWORD not set for {Config.GMAIL_USER}. "
+                    f"Please generate an app password at https://support.google.com/accounts/answer/185833 "
+                    f"and add it to your .env file.")
             return
 
         # Log configuration for debugging
         logger.info(
-            f"GmailHandler initialized - Check inbox: {self.check_email_user}, Archive/Delete: {self.email_user or 'Not set'}, SMTP: {self.tars_email} (Target: {Config.TARGET_EMAIL})")
-        if Config.GMAIL_TARS_EMAIL:
-            has_password = bool(Config.GMAIL_TARS_APP_PASSWORD)
-            logger.info(f"Using TARS email ({Config.GMAIL_TARS_EMAIL}) for receiving emails - App password: {'✓ Set' if has_password else '✗ NOT SET'}")
-            if not has_password:
-                logger.error(
-                    f"GMAIL_TARS_APP_PASSWORD is not set! Please generate an app password at "
-                    f"https://support.google.com/accounts/answer/185833 and add it to your .env file.")
-        else:
-            logger.warning(f"GMAIL_TARS_EMAIL not set, falling back to GMAIL_USER ({Config.GMAIL_USER}) for receiving emails")
+            f"GmailHandler initialized - Using {self.email_user} for all operations (receive, send, archive, delete)")
+        logger.info(f"Important email notifications: {Config.IMPORTANT_EMAIL_NOTIFICATION}")
 
     async def start_polling(self):
         """Start background polling for new emails."""
-        if not self.check_email_user or not self.check_email_pass:
+        if not self.email_user or not self.email_pass:
             return
 
         self.running = True
@@ -97,26 +98,26 @@ class GmailHandler:
         """Synchronous implementation of email checking."""
         try:
             # print("DEBUG: Checking IMAP...") # Uncomment if you want to see every check
-            # Connect to IMAP - use TARS email inbox for receiving messages
+            # Connect to IMAP - use matedort1@gmail.com inbox for receiving messages
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             
-            # Validate credentials before attempting login
-            if not self.check_email_user or not self.check_email_pass:
-                logger.error(f"Missing credentials: user={'set' if self.check_email_user else 'NOT SET'}, pass={'set' if self.check_email_pass else 'NOT SET'}")
+            if not self.email_user or not self.email_pass:
+                logger.error(f"Missing credentials: user={'set' if self.email_user else 'NOT SET'}, pass={'set' if self.email_pass else 'NOT SET'}")
                 return
             
-            # Remove any spaces from password (Google app passwords sometimes have spaces)
-            password = self.check_email_pass.replace(' ', '')
+            # Remove all whitespace from password (Google app passwords sometimes have spaces/newlines)
+            # Config already does this, but double-check here
+            password = ''.join(self.email_pass.split()) if self.email_pass else ''
             
             try:
-                mail.login(self.check_email_user, password)
+                mail.login(self.email_user, password)
             except imaplib.IMAP4.error as e:
                 error_msg = str(e)
                 if 'Application-specific password required' in error_msg or '185833' in error_msg:
                     logger.error(
-                        f"IMAP login failed: App password required for {self.check_email_user}. "
+                        f"IMAP login failed: App password required for {self.email_user}. "
                         f"Please generate an app password at https://support.google.com/accounts/answer/185833 "
-                        f"and set GMAIL_TARS_APP_PASSWORD in your .env file. "
+                        f"and set GMAIL_APP_PASSWORD in your .env file. "
                         f"Make sure you're using an app password, not your regular Gmail password.")
                 else:
                     logger.error(f"IMAP login failed: {error_msg}")
@@ -164,6 +165,31 @@ class GmailHandler:
                         body = msg.get_payload(decode=True).decode(
                             'latin-1', errors='ignore')
 
+                # Hybrid TARS email filter - skip emails sent by TARS itself
+                # Check 1: Does From header contain "TARS"?
+                from_header = msg.get('From', '')  # Get full From header (e.g., "TARS <matedort1@gmail.com>")
+                is_tars_from_header = 'TARS' in from_header
+                
+                # Check 2: Does subject match TARS patterns?
+                tars_subject_patterns = [
+                    'TARS Notification',
+                    'TARS Reply',
+                    '⏰ TARS Reminder',
+                    '📞 Call Summary',
+                    '❓ Action Required',
+                    '📝 Conversation Summary'
+                ]
+                is_tars_subject = any(subject and subject.startswith(prefix) for prefix in tars_subject_patterns)
+                
+                # If EITHER check is true, skip this email (it's from TARS)
+                if is_tars_from_header or is_tars_subject:
+                    logger.debug(f"Skipping TARS-generated email: {subject} (From: {from_header})")
+                    try:
+                        mail.store(num, '+FLAGS', '(\\Seen)')
+                    except Exception as e:
+                        logger.warning(f"Failed to mark TARS email as read: {e}")
+                    continue  # Skip to next email, don't process this one
+
                 logger.info(f"Received email from {sender}: {subject}")
 
                 # Email filtering logic
@@ -177,7 +203,7 @@ class GmailHandler:
                             from_number=sender,
                             message_body=body.strip(),
                             medium='gmail',
-                            to_number=self.check_email_user  # TARS email where message was received
+                            to_number=self.email_user  # matedort1@gmail.com where message was received
                         )
                         asyncio.run_coroutine_threadsafe(coro, loop)
                     # Mark email as read after processing
@@ -221,31 +247,14 @@ class GmailHandler:
         Returns:
             True if successful
         """
-        # #region debug log
-        try:
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:entry", "message": "send_email called", "data": {"to_email": to_email, "subject": subject[:50], "has_credentials": bool(self.tars_email and self.tars_email_pass)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-        except:
-            pass
-        # #endregion
-        
-        # Use TARS email credentials for sending (not user email credentials)
-        if not self.tars_email or not self.tars_email_pass:
-            logger.error(f"Cannot send email: SMTP credentials missing (tars_email={'set' if self.tars_email else 'NOT SET'}, tars_email_pass={'set' if self.tars_email_pass else 'NOT SET'})")
+        # Use matedort1@gmail.com credentials for sending
+        if not self.email_user or not self.email_pass:
+            logger.error(f"Cannot send email: SMTP credentials missing (email_user={'set' if self.email_user else 'NOT SET'}, email_pass={'set' if self.email_pass else 'NOT SET'})")
             return False
 
         # Validate email address format
         from config import Config
         if not to_email or '@' not in to_email:
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:invalid_email", "message": "Invalid email address", "data": {"to_email": to_email, "target_email": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             logger.error(f"Invalid email address: {to_email}. Using TARGET_EMAIL instead.")
             to_email = Config.TARGET_EMAIL
             if not to_email or '@' not in to_email:
@@ -254,7 +263,7 @@ class GmailHandler:
         
         try:
             msg = MIMEMultipart()
-            msg['From'] = f"TARS <{self.tars_email}>"
+            msg['From'] = f"TARS <{self.email_user}>"  # Send FROM matedort1@gmail.com as TARS
             msg['To'] = to_email
             msg['Subject'] = subject
 
@@ -262,25 +271,9 @@ class GmailHandler:
 
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
-            server.login(self.tars_email, self.tars_email_pass)
+            server.login(self.email_user, self.email_pass)  # Use matedort1@gmail.com credentials
             text = msg.as_string()
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:before_sendmail", "message": "About to call sendmail", "data": {"from": self.tars_email, "to": to_email}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-            result = server.sendmail(self.tars_email, to_email, text)
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:after_sendmail", "message": "sendmail result", "data": {"result": str(result) if result else "success"}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
+            result = server.sendmail(self.email_user, to_email, text)
             server.quit()
 
             logger.info(f"Sent email to {to_email}: {subject}")
@@ -296,14 +289,6 @@ class GmailHandler:
             return True
 
         except Exception as e:
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:send_email:error", "message": "SMTP error", "data": {"error": str(e), "to_email": to_email}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             logger.error(f"SMTP Error: {e}")
             return False
 
@@ -487,7 +472,7 @@ Continue the conversation on your call.
         """
         # Implement Gmail threading using In-Reply-To and References headers
         msg = MIMEMultipart()
-        msg['From'] = f"TARS <{self.tars_email}>"
+        msg['From'] = f"TARS <{self.email_user}>"  # Send FROM matedort1@gmail.com as TARS
         msg['To'] = to_email
         msg['Subject'] = subject
 
@@ -514,7 +499,7 @@ Continue the conversation on your call.
         """
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login(self.tars_email, self.tars_email_pass)
+        server.login(self.email_user, self.email_pass)  # Use matedort1@gmail.com credentials
         server.send_message(msg)
         server.quit()
 
@@ -617,11 +602,16 @@ Subject: {subject}
 Body: {body[:500]}
 
 Actions available:
-- archive: For promotional emails, newsletters, non-urgent updates
-- delete: For obvious spam, junk mail, unwanted advertisements
-- notify: For important emails that need user attention but don't need immediate reply
+- archive: For promotional emails, newsletters, non-urgent updates, advertisements, spam
+- delete: For obvious spam, junk mail, unwanted advertisements (only if clearly spam)
+- important: For important emails like flight changes, cancellations, urgent notifications, important updates, time-sensitive information
 
-Respond with only one word: "archive", "delete", or "notify"."""
+First, determine if this email is IMPORTANT (flight changes, cancellations, urgent matters, time-sensitive).
+If important, respond with "important".
+If it's spam/advertisement, respond with "archive" (or "delete" if clearly spam).
+Otherwise, respond with "archive".
+
+Respond with only one word: "archive", "delete", or "important"."""
             
             response = await client.aio.models.generate_content(
                 model="models/gemini-2.0-flash-exp",
@@ -630,25 +620,31 @@ Respond with only one word: "archive", "delete", or "notify"."""
             )
             
             action = None
+            is_important = False
             if response.candidates and response.candidates[0].content.parts:
                 result = response.candidates[0].content.parts[0].text.strip().lower()
-                if "archive" in result:
-                    action = "archive"
+                if "important" in result:
+                    action = "important"
+                    is_important = True
                 elif "delete" in result:
                     action = "delete"
                 else:
-                    action = "notify"
+                    action = "archive"
             
             # Execute action
             if action == "archive":
+                # Auto-archive spam/advertisements
                 await asyncio.to_thread(self.archive_email, message_id)
-                await self._notify_email_action(sender, subject, "archived")
+                await self._notify_email_action(sender, subject, "archived", body[:200])
             elif action == "delete":
                 # Don't delete autonomously - just notify user
-                await self._notify_email_action(sender, subject, "should_delete")
+                await self._notify_email_action(sender, subject, "should_delete", body[:200])
+            elif action == "important":
+                # Important email - notify user based on IMPORTANT_EMAIL_NOTIFICATION config
+                await self._notify_important_email(sender, subject, body, message_id)
             else:
-                # Notify user about the email
-                await self._notify_email_action(sender, subject, "received")
+                # Default: notify user about the email
+                await self._notify_email_action(sender, subject, "received", body[:200])
                 
         except Exception as e:
             logger.error(f"Error in smart email processing: {e}")
@@ -656,13 +652,14 @@ Respond with only one word: "archive", "delete", or "notify"."""
             if 'client' in locals():
                 client.close()
 
-    async def _notify_email_action(self, sender: str, subject: str, action: str):
+    async def _notify_email_action(self, sender: str, subject: str, action: str, body_preview: str = ""):
         """Notify user about email action taken.
         
         Args:
             sender: Sender email address
             subject: Email subject
             action: Action taken (archived, deleted, received, should_delete)
+            body_preview: Preview of email body (optional)
         """
         try:
             if action == "archived":
@@ -675,10 +672,66 @@ Respond with only one word: "archive", "delete", or "notify"."""
                 message = f"Received email from {sender}: {subject}"
             
             # Send notification via email
-            if self.messaging_handler and self.messaging_handler.gmail_handler:
-                await self.send_console_message(message, "notification")
+            if self.messaging_handler:
+                # Send via email
+                if self.messaging_handler.gmail_handler:
+                    await self.send_console_message(message, "notification")
         except Exception as e:
             logger.error(f"Error notifying email action: {e}")
+
+    async def _notify_important_email(self, sender: str, subject: str, body: str, message_id: str):
+        """Notify user about important email based on IMPORTANT_EMAIL_NOTIFICATION config.
+        
+        Args:
+            sender: Sender email address
+            subject: Email subject
+            body: Email body
+            message_id: IMAP message ID
+        """
+        try:
+            notification_method = Config.IMPORTANT_EMAIL_NOTIFICATION.lower()
+            
+            # Create notification message
+            notification_text = f"Important email from {sender}: {subject}\n\n{body[:300]}"
+            
+            # Send via call
+            if notification_method in ['call', 'both']:
+                if self.messaging_handler:
+                    twilio_handler = getattr(self.messaging_handler, 'twilio_handler', None)
+                    if twilio_handler and hasattr(twilio_handler, 'make_call'):
+                        try:
+                            twilio_handler.make_call(
+                                to_number=Config.TARGET_PHONE_NUMBER,
+                                reminder_message=f"Important email: {subject}"
+                            )
+                            logger.info(f"Initiated call for important email: {subject}")
+                        except Exception as e:
+                            logger.error(f"Error making call for important email: {e}")
+                    else:
+                        logger.warning(f"Cannot make call for important email: twilio_handler not available")
+            
+            # Send via message (SMS)
+            if notification_method in ['message', 'both']:
+                if self.messaging_handler:
+                    try:
+                        await self.messaging_handler.send_message(
+                            to_number=Config.TARGET_PHONE_NUMBER,
+                            message_body=f"📧 Important email: {subject}\nFrom: {sender}\n\n{body[:200]}",
+                            medium='sms'
+                        )
+                        logger.info(f"Sent SMS for important email: {subject}")
+                    except Exception as e:
+                        logger.error(f"Error sending SMS for important email: {e}")
+            
+            # Also send via email for record
+            if self.messaging_handler and self.messaging_handler.gmail_handler:
+                await self.send_console_message(
+                    f"Important email from {sender}: {subject}\n\n{body[:500]}",
+                    "important_email"
+                )
+                
+        except Exception as e:
+            logger.error(f"Error notifying important email: {e}")
 
     async def _create_draft_and_notify(self, sender: str, subject: str, body: str):
         """Create a draft email and notify user for approval.
@@ -794,118 +847,34 @@ Write a concise, professional reply in the user's name. Keep it brief and approp
         Returns:
             True if successful
         """
-        # #region debug log
         try:
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:archive_email:entry", "message": "archive_email called", "data": {"message_id": message_id, "message_id_type": type(message_id).__name__, "has_credentials": bool(self.email_user and self.email_pass)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-        except:
-            pass
-        # #endregion
-        try:
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "gmail_handler.py:archive_email:before_connect", "message": "About to connect to IMAP", "data": {"message_id": message_id}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
+            # Use matedort1@gmail.com credentials
+            if not self.email_user or not self.email_pass:
+                logger.error(f"Cannot archive email: Missing credentials (user={'set' if self.email_user else 'NOT SET'}, pass={'set' if self.email_pass else 'NOT SET'})")
+                return False
+            
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(self.email_user, self.email_pass)
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "gmail_handler.py:archive_email:after_login", "message": "Logged in to IMAP", "data": {"message_id": message_id}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             status, data = mail.select("inbox")
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "gmail_handler.py:archive_email:after_select", "message": "Selected inbox", "data": {"message_id": message_id, "select_status": status, "select_data": str(data) if data else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             
             # Convert message_id to bytes if it's a string (IMAP expects bytes for sequence numbers)
             msg_id_bytes = message_id.encode('utf-8') if isinstance(message_id, str) else message_id
-            
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "gmail_handler.py:archive_email:before_store", "message": "About to call store command", "data": {"message_id": message_id, "msg_id_bytes": msg_id_bytes.decode('utf-8') if isinstance(msg_id_bytes, bytes) else str(msg_id_bytes)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             
             # Archive by removing the INBOX label (Gmail-specific)
             # This moves the email from Inbox to All Mail (archived)
             # Try using the correct Gmail IMAP extension format
             status, response = mail.store(msg_id_bytes, '-X-GM-LABELS', '(\\Inbox)')
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "gmail_handler.py:archive_email:after_store", "message": "Store command executed", "data": {"message_id": message_id, "store_status": status, "store_response": str(response) if response else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             
             if status != 'OK':
-                # #region debug log
-                try:
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "G", "location": "gmail_handler.py:archive_email:store_failed", "message": "Store command failed", "data": {"message_id": message_id, "status": status, "response": str(response) if response else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
                 mail.logout()
                 return False
             
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H", "location": "gmail_handler.py:archive_email:before_expunge", "message": "About to expunge", "data": {"message_id": message_id}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             mail.expunge()
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "I", "location": "gmail_handler.py:archive_email:after_expunge", "message": "Expunge completed", "data": {"message_id": message_id}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             mail.logout()
             
             logger.info(f"Archived email {message_id}")
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "J", "location": "gmail_handler.py:archive_email:success", "message": "Archive completed successfully", "data": {"message_id": message_id}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             return True
         except Exception as e:
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "K", "location": "gmail_handler.py:archive_email:error", "message": "Exception in archive_email", "data": {"message_id": message_id, "error": str(e), "error_type": type(e).__name__}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             logger.error(f"Error archiving email: {e}")
             return False
 
@@ -918,15 +887,12 @@ Write a concise, professional reply in the user's name. Keep it brief and approp
         Returns:
             True if successful
         """
-        # #region debug log
         try:
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "gmail_handler.py:delete_email:entry", "message": "delete_email called", "data": {"message_id": message_id}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-        except:
-            pass
-        # #endregion
-        try:
+            # Use matedort1@gmail.com credentials
+            if not self.email_user or not self.email_pass:
+                logger.error(f"Cannot delete email: Missing credentials (user={'set' if self.email_user else 'NOT SET'}, pass={'set' if self.email_pass else 'NOT SET'})")
+                return False
+            
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(self.email_user, self.email_pass)
             status, data = mail.select("inbox")
@@ -936,14 +902,6 @@ Write a concise, professional reply in the user's name. Keep it brief and approp
             
             # Mark as deleted and expunge
             status, response = mail.store(msg_id_bytes, '+FLAGS', '(\\Deleted)')
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "gmail_handler.py:delete_email:after_store", "message": "Store command executed", "data": {"message_id": message_id, "store_status": status, "store_response": str(response) if response else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             
             if status != 'OK':
                 mail.logout()
@@ -955,14 +913,6 @@ Write a concise, professional reply in the user's name. Keep it brief and approp
             logger.info(f"Deleted email {message_id}")
             return True
         except Exception as e:
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "gmail_handler.py:delete_email:error", "message": "Exception in delete_email", "data": {"message_id": message_id, "error": str(e)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             logger.error(f"Error deleting email: {e}")
             return False
 
@@ -981,12 +931,17 @@ Write a concise, professional reply in the user's name. Keep it brief and approp
             # For now, we'll use IMAP to create a draft
             # In the future, this could use Gmail API for better integration
             msg = MIMEMultipart()
-            msg['From'] = f"TARS <{self.tars_email}>"
+            msg['From'] = f"TARS <{self.email_user}>"  # Send FROM matedort1@gmail.com as TARS
             msg['To'] = to_email
             msg['Subject'] = subject
             msg.attach(MIMEText(body, 'plain'))
             
-            # Use IMAP to append as draft (stored in user's mailbox, but From is TARS email)
+            # Use IMAP to append as draft (stored in matedort1@gmail.com mailbox)
+            # Use matedort1@gmail.com credentials
+            if not self.email_user or not self.email_pass:
+                logger.error(f"Cannot create draft: Missing credentials (user={'set' if self.email_user else 'NOT SET'}, pass={'set' if self.email_pass else 'NOT SET'})")
+                return None
+            
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(self.email_user, self.email_pass)
             mail.select("[Gmail]/Drafts")
@@ -1014,6 +969,11 @@ Write a concise, professional reply in the user's name. Keep it brief and approp
             List of email dicts with id, subject, sender, date
         """
         try:
+            # Use matedort1@gmail.com credentials for all operations
+            if not self.email_user or not self.email_pass:
+                logger.error(f"Cannot list emails: Missing credentials (user={'set' if self.email_user else 'NOT SET'}, pass={'set' if self.email_pass else 'NOT SET'})")
+                return []
+            
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(self.email_user, self.email_pass)
             

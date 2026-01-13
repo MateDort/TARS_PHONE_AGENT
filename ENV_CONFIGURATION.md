@@ -23,18 +23,18 @@ GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=models/gemini-2.5-flash-native-audio-preview-12-2025
 GEMINI_VOICE=Puck
 
-# Gmail Configuration (Required for email console) - LINES 53-58
-# GMAIL_USER is used for IMAP operations (checking, archiving, deleting emails)
+# Gmail Configuration (Required for email console)
+# All email operations use matedort1@gmail.com (receiving, sending, archiving, deleting)
 GMAIL_USER=matedort1@gmail.com
 GMAIL_APP_PASSWORD=your_gmail_app_password_here
 
-# TARS Email Configuration (for sending emails FROM TARS)
-# GMAIL_TARS_EMAIL is used for SMTP operations (sending emails)
-GMAIL_TARS_EMAIL=your_tars_email@gmail.com
-GMAIL_TARS_APP_PASSWORD=your_tars_email_app_password_here
-
 # TARGET_EMAIL is the user's email address (e.g., matedort1@gmail.com) - emails FROM this address are processed
 TARGET_EMAIL=matedort1@gmail.com
+
+# Important Email Notification Configuration
+# Options: call, message, both
+# Default: call (TARS will call you for important emails like flight changes, cancellations, etc.)
+IMPORTANT_EMAIL_NOTIFICATION=call
 
 # ============================================================
 # NETWORK & WEBHOOK CONFIGURATION
