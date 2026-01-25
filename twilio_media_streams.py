@@ -78,6 +78,15 @@ class TwilioMediaStreamsHandler:
                 from_number = request.form.get('From')
                 to_number = request.form.get('To')
 
+                # #region agent log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json, time
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"twilio_media_streams.py:voice_webhook","message":"Webhook received call","data":{"call_sid":call_sid,"from":from_number,"to":to_number},"timestamp":int(time.time()*1000)})+"\n")
+                except:
+                    pass
+                # #endregion
+
                 print(f"\n📞 INCOMING CALL")
                 print(f"   From: {from_number}")
                 print(f"   To: {to_number}")
@@ -103,6 +112,15 @@ class TwilioMediaStreamsHandler:
                     stream = Stream(url=f'wss://{websocket_base}')
                 connect.append(stream)
                 response.append(connect)
+
+                # #region agent log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json, time
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"twilio_media_streams.py:voice_webhook_response","message":"Sending TwiML response","data":{"call_sid":call_sid,"websocket_url":Config.WEBSOCKET_URL or "fallback","twiml":str(response)[:200]},"timestamp":int(time.time()*1000)})+"\n")
+                except:
+                    pass
+                # #endregion
 
                 return Response(str(response), mimetype='text/xml')
 
@@ -333,6 +351,14 @@ class TwilioMediaStreamsHandler:
         call_gemini_client = None
 
         try:
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json, time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"twilio_media_streams.py:handle_media_stream","message":"WebSocket connection established","data":{"remote_address":str(websocket.remote_address) if hasattr(websocket, 'remote_address') else 'unknown'},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
             print(f"\n🔌 WEBSOCKET CONNECTED")
             logger.info("Media stream connected - waiting for start event...")
 
@@ -378,9 +404,12 @@ class TwilioMediaStreamsHandler:
                         # CREATE SESSION via SessionManager
                         # This handles authentication, naming, and permission-filtered function declarations
                         # #region agent log
-                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                            import json, time
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"twilio_media_streams.py:376","message":"Creating session - before","data":{"call_sid":call_sid,"auth_phone":auth_phone},"timestamp":int(time.time()*1000)})+"\n")
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json, time
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"twilio_media_streams.py:before_create_session","message":"Creating session","data":{"call_sid":call_sid,"auth_phone":auth_phone,"has_pending_reminder":bool(self.pending_reminder)},"timestamp":int(time.time()*1000)})+"\n")
+                        except:
+                            pass
                         # #endregion
                         session = await self.session_manager.create_session(
                             call_sid=call_sid,
@@ -391,9 +420,12 @@ class TwilioMediaStreamsHandler:
                                 self.pending_reminder or "") else None
                         )
                         # #region agent log
-                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                            import json, time
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"twilio_media_streams.py:388","message":"Session created - after","data":{"session_name":session.session_name,"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json, time
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"twilio_media_streams.py:after_create_session","message":"Session created","data":{"session_name":session.session_name,"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        except:
+                            pass
                         # #endregion
 
                         print(
@@ -408,15 +440,21 @@ class TwilioMediaStreamsHandler:
                         # Connect to Gemini with permission level
                         print(f"   Connecting to Gemini Live...")
                         # #region agent log
-                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                            import json, time
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"twilio_media_streams.py:396","message":"Connecting to Gemini - before","data":{"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json, time
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"twilio_media_streams.py:before_gemini_connect","message":"Connecting to Gemini","data":{"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        except:
+                            pass
                         # #endregion
                         await call_gemini_client.connect(permission_level=session.permission_level.value)
                         # #region agent log
-                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                            import json, time
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"twilio_media_streams.py:399","message":"Gemini connected - after","data":{"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import json, time
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"twilio_media_streams.py:after_gemini_connect","message":"Gemini connected","data":{"is_connected":call_gemini_client.is_connected},"timestamp":int(time.time()*1000)})+"\n")
+                        except:
+                            pass
                         # #endregion
                         print(
                             f"   ✅ Gemini Live connected (permission: {session.permission_level.value})")
@@ -447,7 +485,23 @@ class TwilioMediaStreamsHandler:
                             # Máté's session - regular greeting
                             from translations import get_text
                             greeting = get_text('greeting')
+                            # #region agent log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import json, time
+                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"twilio_media_streams.py:before_send_greeting","message":"Sending greeting","data":{"greeting_length":len(greeting)},"timestamp":int(time.time()*1000)})+"\n")
+                            except:
+                                pass
+                            # #endregion
                             await call_gemini_client.send_text(f"[System: Greet Máté with: '{greeting}']", end_of_turn=True)
+                            # #region agent log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import json, time
+                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"twilio_media_streams.py:after_send_greeting","message":"Greeting sent","data":{"success":True},"timestamp":int(time.time()*1000)})+"\n")
+                            except:
+                                pass
+                            # #endregion
                             print(f"   👋 Greeting sent to TARS")
                             logger.info(
                                 "Sent greeting trigger to Gemini for Máté")
@@ -708,24 +762,10 @@ Keep it concise and natural for speaking."""
                             )
 
                         except Exception as e:
-                            # #region debug log
-                            try:
-                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "twilio_media_streams.py:handle_media_stream:audio_error", "message": "Error processing audio", "data": {"error": str(e), "error_type": type(e).__name__, "is_reconnecting": self.is_reconnecting, "is_connected": call_gemini_client.is_connected if call_gemini_client else None, "contains_1008": "1008" in str(e), "contains_1011": "1011" in str(e)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                            except:
-                                pass
-                            # #endregion
                             # If connection error, trigger reconnection
                             if "Not connected" in str(e) or "1008" in str(e) or "1011" in str(e):
                                 if not self.is_reconnecting:
                                     self.is_reconnecting = True
-                                    # #region debug log
-                                    try:
-                                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "twilio_media_streams.py:handle_media_stream:start_reconnect", "message": "Starting reconnection", "data": {"is_reconnecting": self.is_reconnecting, "buffer_size": len(self.audio_buffer)}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                                    except:
-                                        pass
-                                    # #endregion
                                     asyncio.create_task(
                                         self._reconnect_gemini())
                                 # Buffer this audio
@@ -785,33 +825,29 @@ Keep it concise and natural for speaking."""
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON from Twilio: {e}")
-                    # #region agent log
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        import json, time
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"twilio_media_streams.py:793","message":"JSON decode error","data":{"error":str(e)},"timestamp":int(time.time()*1000)})+"\n")
-                    # #endregion
                 except Exception as e:
                     logger.error(f"Error processing Twilio message: {e}")
-                    # #region agent log
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        import json, time
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"twilio_media_streams.py:796","message":"Error processing message","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(time.time()*1000)})+"\n")
-                    # #endregion
 
         except websockets.exceptions.ConnectionClosed:
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json, time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"twilio_media_streams.py:connection_closed","message":"WebSocket closed","data":{"call_sid":call_sid},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
             logger.info("Media stream connection closed")
-            # #region agent log
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json, time
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"twilio_media_streams.py:818","message":"WebSocket connection closed","data":{"call_sid":call_sid},"timestamp":int(time.time()*1000)})+"\n")
-            # #endregion
         except Exception as e:
-            logger.error(f"Error in media stream handler: {e}")
             # #region agent log
-            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                import json, time
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"twilio_media_streams.py:820","message":"Exception in handle_media_stream","data":{"error":str(e),"error_type":type(e).__name__,"call_sid":call_sid},"timestamp":int(time.time()*1000)})+"\n")
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json, time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"twilio_media_streams.py:exception","message":"Exception in handler","data":{"error":str(e),"error_type":type(e).__name__,"call_sid":call_sid},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
             # #endregion
+            logger.error(f"Error in media stream handler: {e}")
         finally:
             # Cleanup - disconnect Gemini client and terminate session
             if call_gemini_client:
@@ -831,14 +867,6 @@ Keep it concise and natural for speaking."""
         try:
             logger.warning(
                 f"Starting reconnection... (buffer size: {len(self.audio_buffer)})")
-            # #region debug log
-            try:
-                active_client = self._active_call_client or self.gemini_client
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:start", "message": "Reconnection started", "data": {"buffer_size": len(self.audio_buffer), "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
 
             # Wait a brief moment for connection to stabilize and reconnection to start
             await asyncio.sleep(1.0)  # Increased from 0.5 to give reconnection more time to start
@@ -852,14 +880,6 @@ Keep it concise and natural for speaking."""
             while not active_client.is_connected and waited < max_wait:
                 await asyncio.sleep(0.1)
                 waited += 0.1
-                # #region debug log
-                if waited % 1.0 < 0.1:  # Log every second
-                    try:
-                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:waiting", "message": "Waiting for reconnection", "data": {"waited": round(waited, 1), "max_wait": max_wait, "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                    except:
-                        pass
-                # #endregion
 
             if active_client.is_connected:
                 logger.info(
@@ -882,44 +902,15 @@ Keep it concise and natural for speaking."""
                         break
 
                 logger.info("Buffer flushed successfully")
-                # #region debug log
-                try:
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:success", "message": "Reconnection successful", "data": {"is_connected": active_client.is_connected, "buffer_flushed": True}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
             else:
                 logger.error("Reconnection timed out")
-                # #region debug log
-                try:
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "twilio_media_streams.py:_reconnect_gemini:timeout", "message": "Reconnection timed out", "data": {"waited": round(waited, 1), "max_wait": max_wait, "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
                 self.audio_buffer.clear()  # Clear buffer on timeout
 
         except Exception as e:
             logger.error(f"Error in reconnection handler: {e}")
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "twilio_media_streams.py:_reconnect_gemini:error", "message": "Reconnection handler error", "data": {"error": str(e), "is_reconnecting": self.is_reconnecting}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
             self.audio_buffer.clear()
         finally:
             self.is_reconnecting = False
-            # #region debug log
-            try:
-                active_client = self._active_call_client or self.gemini_client
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "twilio_media_streams.py:_reconnect_gemini:finally", "message": "Reconnection handler finished", "data": {"is_reconnecting": self.is_reconnecting, "is_connected": active_client.is_connected if active_client else None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
 
     async def start_websocket_server(self, host: str = '0.0.0.0', port: int = 5001):
         """Start WebSocket server for Media Streams.
@@ -932,16 +923,7 @@ Keep it concise and natural for speaking."""
             f"Starting Media Streams WebSocket server on {host}:{port}")
 
         async def websocket_handler(websocket, path=None):
-            """Wrapper to log connection attempts."""
-            # #region agent log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json, time
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"twilio_media_streams.py:websocket_handler","message":"WebSocket connection attempt","data":{"remote_addr":websocket.remote_address if hasattr(websocket, 'remote_address') else None,"path":path},"timestamp":int(time.time()*1000)})+"\n")
-            except:
-                pass
-            # #endregion
-            logger.info(f"WebSocket connection attempt from {websocket.remote_address if hasattr(websocket, 'remote_address') else 'unknown'}")
+            """Wrapper handler for WebSocket connections."""
             await self.handle_media_stream(websocket)
 
         self.websocket_server = await websockets.serve(

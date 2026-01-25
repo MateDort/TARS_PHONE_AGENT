@@ -1652,36 +1652,169 @@ class N8NAgent(SubAgent):
             logger.error("N8N_WEBHOOK_URL not configured")
             return "N8N webhook URL is not configured, sir. Please set N8N_WEBHOOK_URL in your .env file."
         
+        # Fix common .env file issues: remove duplicate variable name if present
+        if n8n_webhook_url.startswith("N8N_WEBHOOK_URL="):
+            n8n_webhook_url = n8n_webhook_url.replace("N8N_WEBHOOK_URL=", "", 1)
+            logger.warning("Fixed N8N_WEBHOOK_URL: removed duplicate variable name prefix")
+        
+        # #region agent log
+        try:
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import time
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"sub_agents_tars.py:_send_to_n8n","message":"Attempting N8N connection","data":{"url_length":len(n8n_webhook_url),"url_starts_with_http":n8n_webhook_url.startswith("http"),"message_preview":message[:50]},"timestamp":int(time.time()*1000)})+"\n")
+        except:
+            pass
+        # #endregion
+        
+        # Enhance message for email requests - replace "Máté" with actual email
+        # This helps N8N's AI agent know the recipient email address
+        enhanced_message = message
+        try:
+            if Config.TARGET_EMAIL and ("email" in message.lower() or "send" in message.lower()):
+                # If message mentions "Máté" or user's name, replace with email for clarity
+                target_name = Config.TARGET_NAME or "Máté"
+                if target_name.lower() in message.lower() or "me" in message.lower() or "my" in message.lower():
+                    # Replace name references with email address
+                    # Replace "to Máté" or "to me" with "to {email}"
+                    enhanced_message = re.sub(
+                        rf'\bto\s+({re.escape(target_name)}|me|my)\b',
+                        f'to {Config.TARGET_EMAIL}',
+                        message,
+                        flags=re.IGNORECASE
+                    )
+                    # Also handle "send email Máté" format (but be careful not to replace in the middle of words)
+                    if enhanced_message == message:  # Only if first replacement didn't work
+                        enhanced_message = re.sub(
+                            rf'\b({re.escape(target_name)}|me|my)\b',
+                            Config.TARGET_EMAIL,
+                            message,
+                            flags=re.IGNORECASE
+                        )
+                    if enhanced_message != message:
+                        logger.info(f"Enhanced N8N message: '{message}' -> '{enhanced_message}'")
+        except Exception as e:
+            logger.warning(f"Error enhancing N8N message, using original: {e}")
+            enhanced_message = message  # Fallback to original message
+        
         try:
             payload = {
-                "message": message
+                "message": enhanced_message
             }
             
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"sub_agents_tars.py:_send_to_n8n","message":"Creating HTTP session","data":{"timeout":10},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
+            
             async with aiohttp.ClientSession() as session:
+                # #region agent log
+                try:
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import time
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"sub_agents_tars.py:_send_to_n8n","message":"Sending POST request","data":{"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+                except:
+                    pass
+                # #endregion
+                
                 async with session.post(
                     n8n_webhook_url,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as response:
+                    # #region agent log
+                    try:
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import time
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_n8n","message":"Received HTTP response","data":{"status":response.status,"headers":dict(response.headers)},"timestamp":int(time.time()*1000)})+"\n")
+                    except:
+                        pass
+                    # #endregion
+                    
                     if response.status == 200:
                         try:
                             result = await response.json()
-                            logger.info(f"Successfully sent message to N8N: {message[:50]}...")
+                            # #region agent log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import time
+                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_n8n","message":"N8N response received","data":{"payload_sent":payload,"response_body":result},"timestamp":int(time.time()*1000)})+"\n")
+                            except:
+                                pass
+                            # #endregion
+                            logger.info(f"Successfully sent message to N8N: {message[:50]}... Response: {result}")
                             return f"I've sent your request to N8N, sir. {result.get('message', 'Task received.')}"
                         except:
                             text_result = await response.text()
-                            logger.info(f"Successfully sent message to N8N: {message[:50]}...")
+                            # #region agent log
+                            try:
+                                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                    import time
+                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_n8n","message":"N8N text response received","data":{"payload_sent":payload,"response_text":text_result},"timestamp":int(time.time()*1000)})+"\n")
+                            except:
+                                pass
+                            # #endregion
+                            logger.info(f"Successfully sent message to N8N: {message[:50]}... Response: {text_result}")
                             return f"I've sent your request to N8N, sir. {text_result if text_result else 'Task received.'}"
                     else:
                         error_text = await response.text()
                         logger.error(f"N8N webhook error {response.status}: {error_text}")
+                        # #region agent log
+                        try:
+                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                                import time
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"sub_agents_tars.py:_send_to_n8n","message":"N8N returned non-200 status","data":{"status":response.status,"error_text":error_text[:200]},"timestamp":int(time.time()*1000)})+"\n")
+                        except:
+                            pass
+                        # #endregion
                         return f"I encountered an error sending to N8N (status {response.status}), sir. Please try again."
         
-        except aiohttp.ClientError as e:
-            logger.error(f"Error connecting to N8N: {e}")
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"Error connecting to N8N (connection failed): {type(e).__name__}: {e}")
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"sub_agents_tars.py:_send_to_n8n","message":"Connection error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
             return f"I couldn't connect to N8N, sir. Please check the webhook URL and try again."
+        except aiohttp.ClientError as e:
+            logger.error(f"Error connecting to N8N (client error): {type(e).__name__}: {e}")
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"sub_agents_tars.py:_send_to_n8n","message":"Client error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
+            return f"I couldn't connect to N8N, sir. Please check the webhook URL and try again."
+        except asyncio.TimeoutError as e:
+            logger.error(f"Error connecting to N8N (timeout): {e}")
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"sub_agents_tars.py:_send_to_n8n","message":"Timeout error","data":{"error_type":type(e).__name__,"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
+            return f"Connection to N8N timed out, sir. Please check the webhook URL and try again."
         except Exception as e:
-            logger.error(f"Unexpected error sending to N8N: {e}")
+            logger.error(f"Unexpected error sending to N8N: {type(e).__name__}: {e}")
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"sub_agents_tars.py:_send_to_n8n","message":"Unexpected error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
             return f"An unexpected error occurred while sending to N8N, sir: {str(e)}"
 
 
