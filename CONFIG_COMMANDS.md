@@ -67,11 +67,6 @@ You can change these settings via phone call or email using natural language com
 - Range: 10-3600 seconds
 - Default: 60 seconds
 
-**Gmail Poll Interval**
-- "Set Gmail poll interval to 5 seconds"
-- "How often do you check Gmail?"
-- Range: 1-300 seconds
-- Default: 2 seconds
 
 **Conversation History Limit**
 - "Set conversation history limit to 20"
@@ -102,12 +97,15 @@ You can change these settings via phone call or email using natural language com
 #### Audio & Technical (1)
 13. `AUDIO_SAMPLE_RATE` - Audio sample rate (default: 8000)
 
-#### Messaging Platform (5)
-14. `MESSAGING_PLATFORM` - Primary platform: `gmail`, `sms`, `whatsapp` (default: `gmail`)
-15. `ENABLE_SMS` - Enable SMS (default: `true`)
-16. `ENABLE_WHATSAPP` - Enable WhatsApp (default: `true`)
-17. `WHATSAPP_NUMBER` - WhatsApp number format
-18. `WHATSAPP_ADMIN_NUMBER` - Admin WhatsApp number
+#### N8N Integration (2)
+14. `N8N_WEBHOOK_URL` - N8N webhook URL for communication tasks (required)
+15. `N8N_TARS_WEBHOOK_URL` - TARS webhook URL for N8N to send tasks back (required)
+
+#### Messaging Features (deprecated - handled by N8N)
+16. `ENABLE_SMS` - Enable SMS (default: `true`, deprecated)
+17. `ENABLE_WHATSAPP` - Enable WhatsApp (default: `true`, deprecated)
+18. `WHATSAPP_NUMBER` - WhatsApp number format
+19. `WHATSAPP_ADMIN_NUMBER` - Admin WhatsApp number
 
 #### Personality & Behavior (6) - **Editable via Commands**
 19. `HUMOR_PERCENTAGE` - 0-100 (default: 70)
@@ -157,15 +155,16 @@ You can change these settings via phone call or email using natural language com
 # Audio Configuration - LINE 45
 AUDIO_SAMPLE_RATE=8000
 
-# Messaging Configuration - LINES 47-51
-MESSAGING_PLATFORM=gmail
+# N8N Integration Configuration
+N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/tars
+N8N_TARS_WEBHOOK_URL=http://your-tars-instance.com/webhook/n8n
+
+# Messaging Features (deprecated - handled by N8N)
 ENABLE_SMS=true
 ENABLE_WHATSAPP=true
 WHATSAPP_NUMBER=whatsapp:+14155238886
 
-# Gmail Configuration (for console interface) - LINES 53-55
-GMAIL_USER=your_gmail@gmail.com
-GMAIL_APP_PASSWORD=your_gmail_app_password_here
+# User Email
 TARGET_EMAIL=your_target_email@gmail.com
 ```
 

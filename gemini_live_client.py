@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional, Callable, Any
 from google import genai
 from google.genai import types
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -304,17 +305,15 @@ Be conversational, friendly, and helpful."""
                 end_of_turn=False
             )
 
-            # Send full content via Gmail
+            # Send full content via N8N
             if self._session_context and hasattr(self._session_context, 'session_id'):
-                # Get the session from session manager via function handler context
-                if hasattr(self, '_session_manager_ref'):
-                    session_manager = self._session_manager_ref
-                    if hasattr(session_manager, 'gmail_handler') and session_manager.gmail_handler:
-                        await session_manager.gmail_handler.send_detailed_response(
-                            session_id=self._session_context.session_id,
-                            content=text,
-                            response_type=reason
-                        )
+                try:
+                    from sub_agents_tars import N8NAgent
+                    n8n_agent = N8NAgent()
+                    n8n_message = f"Send email to {Config.TARGET_EMAIL} with subject 'TARS {reason.title()}' and body '{text}'"
+                    await n8n_agent.execute({"message": n8n_message})
+                except Exception as e:
+                    logger.error(f"Error sending detailed response via N8N: {e}")
 
             return True  # Handled via message
 
@@ -489,14 +488,37 @@ Be conversational, friendly, and helpful."""
                     # #endregion
     
     async def _handle_function_calls(self, tool_call):
-        """Handle function calls from Gemini.
+        """Handle function calls from Gemini with task planning.
         
         Args:
             tool_call: Tool call from Gemini response
         """
+        # Collect all function calls
+        function_calls = []
         for fc in tool_call.function_calls:
-            fn_name = fc.name
-            args = fc.args
+            function_calls.append({
+                "name": fc.name,
+                "args": fc.args,
+                "id": fc.id,
+                "fc": fc  # Keep reference to original
+            })
+        
+        # Plan and order function calls
+        if len(function_calls) > 1:
+            try:
+                from task_planner import TaskPlanner
+                planner = TaskPlanner()
+                planned_calls = planner.plan_tasks(function_calls)
+                logger.info(f"Planned {len(function_calls)} function calls, reordered to {len(planned_calls)}")
+                function_calls = planned_calls
+            except Exception as e:
+                logger.warning(f"Task planning failed, executing in original order: {e}")
+        
+        # Execute planned function calls in order
+        for call_data in function_calls:
+            fn_name = call_data["name"]
+            args = call_data["args"]
+            fc = call_data["fc"]
 
             print(f"\n⚙️  FUNCTION CALL: {fn_name}")
             print(f"   Args: {args}")

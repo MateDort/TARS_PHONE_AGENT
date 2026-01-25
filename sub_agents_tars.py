@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from gemini_live_client import SubAgent
 from database import Database
@@ -38,7 +38,7 @@ class ConfigAgent(SubAgent):
         setting = args.get("setting", "").lower()
 
         valid_settings = ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report", 
-                         "voice", "reminder_check_interval", "gmail_poll_interval", "conversation_history_limit"]
+                         "voice", "reminder_check_interval", "conversation_history_limit"]
         if setting not in valid_settings:
             return f"Please specify one of: {', '.join(valid_settings)}."
 
@@ -183,25 +183,6 @@ class ConfigAgent(SubAgent):
             logger.info(f"Updated reminder check interval to {value_int} seconds")
             return f"Reminder check interval updated to {value_int} seconds, sir."
 
-        # Handle gmail_poll_interval setting
-        elif setting == "gmail_poll_interval":
-            try:
-                value_int = int(value)
-                if value_int < 1:
-                    return "Gmail poll interval must be at least 1 second, sir."
-                if value_int > 300:
-                    return "Gmail poll interval cannot exceed 300 seconds (5 minutes), sir."
-            except (ValueError, TypeError):
-                return "Invalid interval. Please provide a number in seconds, sir."
-
-            setting_key = "GMAIL_POLL_INTERVAL"
-            os.environ[setting_key] = str(value_int)
-            self._update_env_file(setting_key, str(value_int))
-            Config.reload()
-            self.db.set_config(setting_key, str(value_int))
-
-            logger.info(f"Updated Gmail poll interval to {value_int} seconds")
-            return f"Gmail poll interval updated to {value_int} seconds, sir."
 
         # Handle conversation_history_limit setting
         elif setting == "conversation_history_limit":
@@ -228,7 +209,7 @@ class ConfigAgent(SubAgent):
     def get_valid_settings(self) -> list:
         """Get list of all valid settings that can be adjusted."""
         return ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report", 
-                "voice", "reminder_check_interval", "gmail_poll_interval", "conversation_history_limit"]
+                "voice", "reminder_check_interval", "conversation_history_limit"]
 
     async def _get_config(self, setting: str) -> str:
         """Get current configuration value."""
@@ -256,9 +237,6 @@ class ConfigAgent(SubAgent):
         elif setting == "reminder_check_interval":
             value = Config.REMINDER_CHECK_INTERVAL
             return f"Current reminder check interval is {value} seconds, sir."
-        elif setting == "gmail_poll_interval":
-            value = Config.GMAIL_POLL_INTERVAL
-            return f"Current Gmail poll interval is {value} seconds, sir."
         elif setting == "conversation_history_limit":
             value = Config.CONVERSATION_HISTORY_LIMIT
             return f"Current conversation history limit is {value} messages, sir."
@@ -815,316 +793,10 @@ class ContactsAgent(SubAgent):
             return birthday_str
 
 
-class MessageAgent(SubAgent):
-    """Agent for sending SMS and WhatsApp messages and links to the user."""
-
-    def __init__(self, messaging_handler):
-        super().__init__(
-            name="message_agent",
-            description="Sends SMS/WhatsApp messages and links to the user. Supports contact names and phone numbers."
-        )
-        self.messaging_handler = messaging_handler
-
-    async def execute(self, args: Dict[str, Any]) -> str:
-        """Handle message sending request.
-
-        Args:
-            args: {
-                "action": "send" or "send_link" (optional - if url provided, treats as send_link),
-                "message": str (message text or link description),
-                "url": str (optional URL to send as link - combines send_message and send_link),
-                "link": str (deprecated - use url instead),
-                "to": str (optional - contact name or phone number, defaults to TARGET_PHONE_NUMBER),
-                "medium": "gmail", "sms", or "whatsapp" (defaults to "gmail")
-            }
-        """
-        action = args.get("action", "send")
-        message = args.get("message", "")
-        url = args.get("url") or args.get("link", "")  # Support both url and link for backward compatibility
-        to_recipient = args.get("to", Config.TARGET_PHONE_NUMBER)
-        medium = args.get("medium", "gmail")
-
-        logger.info(f"MessageAgent: {action} via {medium} to {to_recipient}")
-
-        # If url is provided, treat as link sending (combines send_message and send_link)
-        if url:
-            self.messaging_handler.send_message(
-                to_number=to_recipient,
-                message_body=message,
-                medium=medium,
-                url=url
-            )
-            return f"Link sent via {medium}, sir."
-        else:
-            # Send regular message
-            self.messaging_handler.send_message(
-                to_number=to_recipient,
-                message_body=message,
-                medium=medium
-            )
-            return f"Message sent via {medium}, sir."
 
 
-class EmailAgent(SubAgent):
-    """Agent for sending emails, managing drafts, and handling email operations."""
 
-    def __init__(self, messaging_handler):
-        super().__init__(
-            name="email_agent",
-            description="Sends emails, manages drafts, archives, deletes, and searches emails"
-        )
-        self.messaging_handler = messaging_handler
 
-    async def execute(self, args: Dict[str, Any]) -> str:
-        """Handle email operations.
-
-        Args:
-            args: Various depending on action
-        """
-        action = args.get("action", "send")
-        
-        if action == "send":
-            return await self._send_email(args)
-        elif action == "archive":
-            return await self._archive_email(args)
-        elif action == "delete":
-            return await self._delete_email(args)
-        elif action == "make_draft" or action == "create_draft":
-            return await self._make_draft(args)
-        elif action == "search" or action == "list":
-            return await self._search_emails(args)
-        elif action == "bulk_delete":
-            return await self._bulk_delete_emails(args)
-        elif action == "bulk_archive":
-            return await self._bulk_archive_emails(args)
-        elif action == "send_draft":
-            return await self._send_draft(args)
-        elif action == "delete_draft":
-            return await self._delete_draft(args)
-        elif action == "list_drafts":
-            return await self._list_drafts(args)
-        else:
-            return f"Unknown email action: {action}, sir."
-
-    async def _send_email(self, args: Dict[str, Any]) -> str:
-        """Send an email."""
-        # Support both old format (no action) and new format (with action)
-        action = args.get("action", "send")
-        to_email = args.get("to", "")
-        subject = args.get("subject", "TARS Message")
-        body = args.get("body", "")
-
-        if not to_email:
-            return "Please provide a recipient (contact name or email address), sir."
-
-        if not body:
-            return "Please provide email body content, sir."
-
-        result = self.messaging_handler.send_email(to_email, subject, body)
-        if result:
-            return f"Email sent to {to_email}, sir."
-        else:
-            return f"Failed to send email to {to_email}, sir."
-
-    async def _archive_email(self, args: Dict[str, Any]) -> str:
-        """Archive an email by message ID."""
-        message_id = args.get("message_id", "")
-        if not message_id:
-            return "Please provide a message ID, sir."
-        
-        if self.messaging_handler and self.messaging_handler.gmail_handler:
-            result = self.messaging_handler.gmail_handler.archive_email(message_id)
-            if result:
-                return f"Email {message_id} archived, sir."
-            else:
-                return f"Failed to archive email {message_id}, sir."
-        return "Gmail handler not available, sir."
-
-    async def _delete_email(self, args: Dict[str, Any]) -> str:
-        """Delete an email by message ID."""
-        message_id = args.get("message_id", "")
-        if not message_id:
-            return "Please provide a message ID, sir."
-        
-        if self.messaging_handler and self.messaging_handler.gmail_handler:
-            result = self.messaging_handler.gmail_handler.delete_email(message_id)
-            if result:
-                return f"Email {message_id} deleted, sir."
-            else:
-                return f"Failed to delete email {message_id}, sir."
-        return "Gmail handler not available, sir."
-
-    async def _make_draft(self, args: Dict[str, Any]) -> str:
-        """Create a draft email."""
-        to_email = args.get("to", "")
-        subject = args.get("subject", "Draft")
-        body = args.get("body", "")
-
-        if not to_email:
-            return "Please provide a recipient, sir."
-
-        if not body:
-            return "Please provide email body content, sir."
-
-        if self.messaging_handler and self.messaging_handler.gmail_handler:
-            draft_id = await self.messaging_handler.gmail_handler.create_draft(to_email, subject, body)
-            if draft_id:
-                return f"Draft created for {to_email}, sir."
-            else:
-                return f"Failed to create draft, sir."
-        return "Gmail handler not available, sir."
-
-    async def _search_emails(self, args: Dict[str, Any]) -> str:
-        """Search or list emails."""
-        folder = args.get("folder", "inbox")
-        query = args.get("query")
-        category = args.get("category")
-        limit = int(args.get("limit", 20))
-
-        if self.messaging_handler and self.messaging_handler.gmail_handler:
-            if category:
-                # Search by category using AI
-                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
-                    folder, category, limit
-                )
-            else:
-                # Regular search/list
-                emails = self.messaging_handler.gmail_handler.list_emails(folder, query, limit)
-            
-            if not emails:
-                return f"No emails found in {folder}, sir."
-            
-            # Format results
-            lines = [f"Found {len(emails)} email(s) in {folder}:"]
-            for email_data in emails[:limit]:
-                lines.append(f"- From: {email_data.get('sender', 'Unknown')}")
-                lines.append(f"  Subject: {email_data.get('subject', '(No Subject)')}")
-                lines.append(f"  Date: {email_data.get('date', 'Unknown')}")
-                lines.append(f"  ID: {email_data.get('id', 'Unknown')}")
-                lines.append("")
-            
-            return "\n".join(lines)
-        return "Gmail handler not available, sir."
-
-    async def _bulk_delete_emails(self, args: Dict[str, Any]) -> str:
-        """Delete multiple emails by criteria."""
-        folder = args.get("folder", "inbox")
-        category = args.get("category")
-        criteria = args.get("criteria")
-        confirm = args.get("confirm", True)
-
-        if self.messaging_handler and self.messaging_handler.gmail_handler:
-            # First, find emails matching criteria
-            if category:
-                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
-                    folder, category, limit=100
-                )
-            elif criteria:
-                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
-                    folder, criteria, limit=100
-                )
-            else:
-                return "Please provide category or criteria for bulk delete, sir."
-            
-            if not emails:
-                return f"No emails found matching criteria in {folder}, sir."
-            
-            email_ids = [e.get('id') for e in emails if e.get('id')]
-            
-            if len(email_ids) > 10 and confirm:
-                return f"Found {len(email_ids)} emails to delete. Please confirm by saying 'yes' or 'confirm', sir."
-            
-            result = self.messaging_handler.gmail_handler.bulk_delete_emails(email_ids)
-            return f"Deleted {result['deleted']} email(s), {result['failed']} failed, sir."
-        return "Gmail handler not available, sir."
-
-    async def _bulk_archive_emails(self, args: Dict[str, Any]) -> str:
-        """Archive multiple emails by criteria."""
-        folder = args.get("folder", "inbox")
-        category = args.get("category")
-        criteria = args.get("criteria")
-
-        if self.messaging_handler and self.messaging_handler.gmail_handler:
-            # Find emails matching criteria
-            if category:
-                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
-                    folder, category, limit=100
-                )
-            elif criteria:
-                emails = await self.messaging_handler.gmail_handler.search_emails_by_criteria(
-                    folder, criteria, limit=100
-                )
-            else:
-                return "Please provide category or criteria for bulk archive, sir."
-            
-            if not emails:
-                return f"No emails found matching criteria in {folder}, sir."
-            
-            email_ids = [e.get('id') for e in emails if e.get('id')]
-            result = self.messaging_handler.gmail_handler.bulk_archive_emails(email_ids)
-            return f"Archived {result['archived']} email(s), {result['failed']} failed, sir."
-        return "Gmail handler not available, sir."
-
-    async def _send_draft(self, args: Dict[str, Any]) -> str:
-        """Send a draft email."""
-        draft_id = args.get("draft_id", "")
-        if not draft_id:
-            return "Please provide a draft ID, sir."
-        
-        # Get draft from database
-        if self.messaging_handler and hasattr(self.messaging_handler, 'db') and self.messaging_handler.db:
-            draft = self.messaging_handler.db.get_email_draft(draft_id)
-            if not draft:
-                return f"Draft {draft_id} not found, sir."
-            
-            # Send the email
-            result = self.messaging_handler.send_email(
-                draft['recipient_email'],
-                draft['subject'],
-                draft['body']
-            )
-            
-            if result:
-                # Update draft status
-                self.messaging_handler.db.update_email_draft_status(draft_id, 'sent', datetime.now().isoformat())
-                return f"Draft sent to {draft['recipient_email']}, sir."
-            else:
-                return f"Failed to send draft, sir."
-        return "Database not available, sir."
-
-    async def _delete_draft(self, args: Dict[str, Any]) -> str:
-        """Delete a draft email."""
-        draft_id = args.get("draft_id", "")
-        if not draft_id:
-            return "Please provide a draft ID, sir."
-        
-        if self.messaging_handler and hasattr(self.messaging_handler, 'db') and self.messaging_handler.db:
-            result = self.messaging_handler.db.delete_email_draft(draft_id)
-            if result:
-                return f"Draft {draft_id} deleted, sir."
-            else:
-                return f"Failed to delete draft {draft_id}, sir."
-        return "Database not available, sir."
-
-    async def _list_drafts(self, args: Dict[str, Any]) -> str:
-        """List all email drafts."""
-        status = args.get("status", "pending")
-        
-        if self.messaging_handler and hasattr(self.messaging_handler, 'db') and self.messaging_handler.db:
-            drafts = self.messaging_handler.db.list_email_drafts(status)
-            if not drafts:
-                return f"No {status} drafts found, sir."
-            
-            lines = [f"Found {len(drafts)} {status} draft(s):"]
-            for draft in drafts:
-                lines.append(f"- Draft ID: {draft['draft_id']}")
-                lines.append(f"  To: {draft['recipient_email']}")
-                lines.append(f"  Subject: {draft['subject']}")
-                lines.append(f"  Created: {draft['created_at']}")
-                lines.append("")
-            
-            return "\n".join(lines)
-        return "Database not available, sir."
 
 
 class NotificationAgent(SubAgent):
@@ -1935,105 +1607,82 @@ class ConversationSearchAgent(SubAgent):
             return f"Unknown search action: {action}"
 
 
-class MessagingAgent(SubAgent):
-    """Handles messaging operations and platform transitions."""
+# MessagingAgent removed - all messaging moved to N8N via send_to_n8n function
 
-    def __init__(self, messaging_handler=None, session_manager=None, twilio_handler=None):
+
+class N8NAgent(SubAgent):
+    """Handles all communication tasks via N8N (Gmail, Calendar, Telegram, Discord)."""
+
+    def __init__(self):
         super().__init__(
-            name="messaging",
-            description="Send messages, links, and suggest platform transitions"
+            name="n8n",
+            description="Send messages and tasks to N8N. N8N handles Gmail, Calendar, Telegram, and Discord automatically."
         )
-        self.messaging_handler = messaging_handler
-        self.session_manager = session_manager
-        self.twilio_handler = twilio_handler
 
     async def execute(self, args: Dict[str, Any]) -> str:
-        """Execute messaging operation.
+        """Execute N8N operation.
 
         Args:
             args: {
-                "action": "send_link|suggest_call|send_snapshot",
-                ... (action-specific parameters)
+                "message": str - the user's request/task description
             }
         """
-        action = args.get("action", "send_link")
+        message = args.get("message", "")
+        
+        if not message:
+            return "Please provide a message or task description, sir."
+        
+        return await self._send_to_n8n(message)
 
-        if action == "send_link":
-            return await self._send_link(args)
-        elif action == "suggest_call":
-            return await self._suggest_call(args)
-        else:
-            return f"Unknown messaging action: {action}"
+    async def _send_to_n8n(self, message: str) -> str:
+        """Send message/task to N8N via HTTP POST.
 
-    async def _send_link(self, args: Dict[str, Any]) -> str:
-        """Send link to user (during call or via message)."""
-        url = args.get("url")
-        description = args.get("description", "")
+        Args:
+            message: User's request/task description
 
-        if not url:
-            return "Please provide a URL, sir."
-
-        # Check if Máté is in active call
-        if self.session_manager:
-            mate_main = await self.session_manager.get_mate_main_session()
-
-            if mate_main and mate_main.is_active():
-                # Send link via Gmail while on call
-                if hasattr(self.session_manager, 'gmail_handler') and self.session_manager.gmail_handler:
-                    await self.session_manager.gmail_handler.send_link_during_call(
-                        mate_main.session_id,
-                        url,
-                        description
-                    )
-                    return f"Link sent to your Gmail, sir: {url}"
-
-        # Not on call, send via message
-        if self.messaging_handler:
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "sub_agents_tars.py:MessageAgent:send_link:before_send", "message": "About to send link via messaging_handler", "data": {"to_number": Config.TARGET_EMAIL, "medium": "gmail", "has_gmail_handler": self.messaging_handler.gmail_handler is not None}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-            self.messaging_handler.send_message(
-                to_number=Config.TARGET_EMAIL,
-                message_body=f"{description}\n\n{url}" if description else url,
-                medium='gmail'
-            )
-            # #region debug log
-            try:
-                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                    import json
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "sub_agents_tars.py:MessageAgent:send_link:after_send", "message": "After send_message call", "data": {}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-            except:
-                pass
-            # #endregion
-            return f"Link sent via email, sir."
-
-        return "Unable to send link at the moment."
-
-    async def _suggest_call(self, args: Dict[str, Any]) -> str:
-        """Suggest transitioning to a call."""
-        reason = args.get("reason", "This would be easier to discuss on a call")
-
-        # Send suggestion via Gmail
-        if self.messaging_handler:
-            suggestion_text = f"""{reason}.
-
-Would you like me to call you now? Reply 'yes' or 'call me' to start a call.
-            """
-
-            self.messaging_handler.send_message(
-                to_number=Config.TARGET_EMAIL,
-                message_body=suggestion_text,
-                medium='gmail'
-            )
-
-            return "Suggested call transition to Máté via email."
-
-        return "Unable to suggest call."
+        Returns:
+            Response message
+        """
+        import aiohttp
+        import json
+        
+        n8n_webhook_url = Config.N8N_WEBHOOK_URL
+        
+        if not n8n_webhook_url:
+            logger.error("N8N_WEBHOOK_URL not configured")
+            return "N8N webhook URL is not configured, sir. Please set N8N_WEBHOOK_URL in your .env file."
+        
+        try:
+            payload = {
+                "message": message
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    n8n_webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        try:
+                            result = await response.json()
+                            logger.info(f"Successfully sent message to N8N: {message[:50]}...")
+                            return f"I've sent your request to N8N, sir. {result.get('message', 'Task received.')}"
+                        except:
+                            text_result = await response.text()
+                            logger.info(f"Successfully sent message to N8N: {message[:50]}...")
+                            return f"I've sent your request to N8N, sir. {text_result if text_result else 'Task received.'}"
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"N8N webhook error {response.status}: {error_text}")
+                        return f"I encountered an error sending to N8N (status {response.status}), sir. Please try again."
+        
+        except aiohttp.ClientError as e:
+            logger.error(f"Error connecting to N8N: {e}")
+            return f"I couldn't connect to N8N, sir. Please check the webhook URL and try again."
+        except Exception as e:
+            logger.error(f"Unexpected error sending to N8N: {e}")
+            return f"An unexpected error occurred while sending to N8N, sir: {str(e)}"
 
 
 # Agent registry
@@ -2044,7 +1693,7 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
 
     Args:
         db: Database instance
-        messaging_handler: Optional MessagingHandler instance for MessageAgent
+        messaging_handler: Optional MessagingHandler instance for messaging operations
         system_reloader_callback: Optional callback to reload system instructions
 
     Returns:
@@ -2058,11 +1707,6 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
         "conversation_search": ConversationSearchAgent(db),
     }
 
-    # Add message agent if messaging_handler is provided
-    if messaging_handler:
-        agents["message"] = MessageAgent(messaging_handler)
-        agents["email"] = EmailAgent(messaging_handler)
-
     # Add outbound call agent if twilio_handler is provided
     if twilio_handler:
         agents["outbound_call"] = OutboundCallAgent(db, twilio_handler)
@@ -2072,10 +1716,10 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
         agents["inter_session"] = InterSessionAgent(
             session_manager, router, db, twilio_handler)
 
-    # Add messaging agent for links and transitions
-    if messaging_handler and session_manager:
-        agents["messaging"] = MessagingAgent(
-            messaging_handler, session_manager, twilio_handler)
+    # MessagingAgent removed - all messaging moved to N8N
+
+    # Add N8N agent for all communication tasks
+    agents["n8n"] = N8NAgent()
 
     return agents
 
@@ -2089,7 +1733,7 @@ def get_function_declarations() -> list:
     return [
         {
             "name": "adjust_config",
-            "description": "Adjust TARS settings. Available settings: humor (0-100%), honesty (0-100%), personality (chatty/normal/brief), nationality, reminder_delivery (call/message/email/both), callback_report (call/message/email/both), voice (Puck/Kore/Charon), reminder_check_interval (seconds), gmail_poll_interval (seconds), conversation_history_limit (messages). Examples: 'set humor to 65%', 'make yourself more chatty', 'set personality to brief', 'become American', 'send reminders via email', 'set callback report to both', 'set voice to Kore', 'set reminder check interval to 30 seconds'",
+            "description": "Adjust TARS settings. Available settings: humor (0-100%), honesty (0-100%), personality (chatty/normal/brief), nationality, reminder_delivery (call/message/email/both), callback_report (call/message/email/both), voice (Puck/Kore/Charon), reminder_check_interval (seconds), conversation_history_limit (messages). Examples: 'set humor to 65%', 'make yourself more chatty', 'set personality to brief', 'become American', 'send reminders via email', 'set callback report to both', 'set voice to Kore', 'set reminder check interval to 30 seconds'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -2099,7 +1743,7 @@ def get_function_declarations() -> list:
                     },
                     "setting": {
                         "type": "STRING",
-                        "description": "Setting to adjust: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', 'callback_report', 'voice', 'reminder_check_interval', 'gmail_poll_interval', or 'conversation_history_limit'"
+                        "description": "Setting to adjust: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', 'callback_report', 'voice', 'reminder_check_interval', or 'conversation_history_limit'"
                     },
                     "value": {
                         "type": "STRING",
@@ -2242,238 +1886,7 @@ def get_function_declarations() -> list:
                 "required": ["action", "query"]
             }
         },
-        {
-            "name": "send_message",
-            "description": "Send a text message or link via SMS, WhatsApp, or email. Supports contact names and phone numbers. If url is provided, sends as a link. Use this when user requests links during phone calls or to send follow-up information.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'send' (text message) or 'send_link' (send URL). Optional - if url is provided, automatically treats as send_link."
-                    },
-                    "message": {
-                        "type": "STRING",
-                        "description": "Message text or link description"
-                    },
-                    "url": {
-                        "type": "STRING",
-                        "description": "Optional URL to send as a link (combines send_message and send_link functionality)"
-                    },
-                    "to": {
-                        "type": "STRING",
-                        "description": "Recipient: contact name or phone number (defaults to Máté's number)"
-                    },
-                    "medium": {
-                        "type": "STRING",
-                        "description": "Communication medium: 'sms', 'whatsapp', or 'gmail' (default: gmail)"
-                    }
-                },
-                "required": ["message"]
-            }
-        },
-        {
-            "name": "send_email",
-            "description": "Send an email to a contact or email address. Supports contact names (looks up email from contacts) or direct email addresses.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'send' (default)"
-                    },
-                    "to": {
-                        "type": "STRING",
-                        "description": "Recipient: contact name (if email available for contact) or email address"
-                    },
-                    "subject": {
-                        "type": "STRING",
-                        "description": "Email subject line"
-                    },
-                    "body": {
-                        "type": "STRING",
-                        "description": "Email body content"
-                    }
-                },
-                "required": ["to", "body"]
-            }
-        },
-        {
-            "name": "archive_email",
-            "description": "Archive an email by message ID. Use this to move emails out of inbox.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'archive'"
-                    },
-                    "message_id": {
-                        "type": "STRING",
-                        "description": "Email message ID to archive"
-                    }
-                },
-                "required": ["action", "message_id"]
-            }
-        },
-        {
-            "name": "delete_email",
-            "description": "Delete an email by message ID. Use this to permanently remove emails.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'delete'"
-                    },
-                    "message_id": {
-                        "type": "STRING",
-                        "description": "Email message ID to delete"
-                    }
-                },
-                "required": ["action", "message_id"]
-            }
-        },
-        {
-            "name": "make_draft",
-            "description": "Create a draft email. The draft will be saved and can be sent later.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'make_draft' or 'create_draft'"
-                    },
-                    "to": {
-                        "type": "STRING",
-                        "description": "Recipient email address or contact name"
-                    },
-                    "subject": {
-                        "type": "STRING",
-                        "description": "Email subject line"
-                    },
-                    "body": {
-                        "type": "STRING",
-                        "description": "Email body content"
-                    }
-                },
-                "required": ["action", "to", "body"]
-            }
-        },
-        {
-            "name": "search_emails",
-            "description": "Search or list emails from inbox, archived, or all folders. Can search by query, category (advertisement, promotional, spam, etc.), or just list recent emails. Examples: 'what emails do I have', 'show me emails from Amazon', 'list archived emails'",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'list' (show recent emails) or 'search' (search by criteria)"
-                    },
-                    "folder": {
-                        "type": "STRING",
-                        "description": "Folder to search: 'inbox', 'archived', or 'all' (default: 'inbox')"
-                    },
-                    "query": {
-                        "type": "STRING",
-                        "description": "Search query (e.g., 'from:amazon.com', 'subject:invoice', or text search)"
-                    },
-                    "category": {
-                        "type": "STRING",
-                        "description": "Filter by category: 'advertisement', 'promotional', 'spam', 'important', 'newsletter', 'notification'"
-                    },
-                    "limit": {
-                        "type": "STRING",
-                        "description": "Maximum number of results (default: 20)"
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "bulk_delete_emails",
-            "description": "Delete multiple emails at once by criteria. Can delete all emails of a specific category (e.g., 'delete all advertisement emails from archived'). Requires confirmation for large batches.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'bulk_delete'"
-                    },
-                    "folder": {
-                        "type": "STRING",
-                        "description": "Folder to search: 'inbox', 'archived', or 'all' (default: 'inbox')"
-                    },
-                    "category": {
-                        "type": "STRING",
-                        "description": "Category to delete: 'advertisement', 'promotional', 'spam', etc."
-                    },
-                    "criteria": {
-                        "type": "STRING",
-                        "description": "Search criteria (alternative to category)"
-                    },
-                    "confirm": {
-                        "type": "STRING",
-                        "description": "Require confirmation for large batches (default: 'true')"
-                    }
-                },
-                "required": ["action"]
-            }
-        },
-        {
-            "name": "send_draft",
-            "description": "Send a previously created draft email.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'send_draft'"
-                    },
-                    "draft_id": {
-                        "type": "STRING",
-                        "description": "Draft ID to send"
-                    }
-                },
-                "required": ["action", "draft_id"]
-            }
-        },
-        {
-            "name": "delete_draft",
-            "description": "Delete a draft email without sending it.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'delete_draft'"
-                    },
-                    "draft_id": {
-                        "type": "STRING",
-                        "description": "Draft ID to delete"
-                    }
-                },
-                "required": ["action", "draft_id"]
-            }
-        },
-        {
-            "name": "list_drafts",
-            "description": "List all email drafts. Shows pending drafts that can be sent or deleted.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {
-                        "type": "STRING",
-                        "description": "Action: 'list_drafts'"
-                    },
-                    "status": {
-                        "type": "STRING",
-                        "description": "Filter by status: 'pending', 'sent', 'deleted' (default: 'pending')"
-                    }
-                },
-                "required": ["action"]
-            }
-        },
+
         {
             "name": "make_goal_call",
             "description": "Make an outbound phone call with a specific goal/objective. Use this when Máté asks you to call someone to accomplish something (book appointment, make inquiry, follow up, etc.). Examples: 'call my dentist to book an appointment for Wednesday at 2pm', 'call the DMV to ask about my license renewal', 'call Helen to see if she wants to meet for dinner'",
@@ -2745,6 +2158,20 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action", "reason"]
+            }
+        },
+        {
+            "name": "send_to_n8n",
+            "description": "Send a message or task to N8N. N8N handles Gmail, Calendar, Telegram, and Discord. Just describe what you want to do (e.g., 'send email to John about meeting', 'send telegram message to Helen', 'check calendar for tomorrow', 'send discord message to team'). N8N will automatically figure out which tool to use based on your request.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "message": {
+                        "type": "STRING",
+                        "description": "The user's request or task description. Describe what you want to do with Gmail, Calendar, Telegram, or Discord. Examples: 'send email to john@example.com about the meeting', 'send telegram message to Helen saying hello', 'check my calendar for tomorrow', 'send discord message to the team channel'"
+                    }
+                },
+                "required": ["message"]
             }
         }
     ]

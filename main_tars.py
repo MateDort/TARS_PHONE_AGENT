@@ -14,8 +14,6 @@ from reminder_checker import ReminderChecker
 from translations import format_text
 from session_manager import SessionManager
 from message_router import MessageRouter
-from gmail_handler import GmailHandler
-from messaging_platform import create_messaging_platform
 
 # Configure logging
 logging.basicConfig(
@@ -119,25 +117,8 @@ class TARSPhoneAgent:
         self.reminder_checker.twilio_handler = self.twilio_handler
         self.reminder_checker.messaging_handler = self.messaging_handler
 
-        # Initialize Gmail handler (with session_manager for call summaries)
-        self.gmail_handler = GmailHandler(
-            database=self.db,
-            messaging_handler=self.messaging_handler,
-            session_manager=self.session_manager
-        )
-        self.messaging_handler.gmail_handler = self.gmail_handler
-
-        # Connect gmail_handler and messaging_handler to session_manager
-        self.session_manager.gmail_handler = self.gmail_handler
+        # Connect messaging_handler to session_manager (for Twilio only)
         self.session_manager.messaging_handler = self.messaging_handler
-
-        # Initialize messaging platform abstraction
-        self.messaging_platform = create_messaging_platform(
-            platform_type=Config.MESSAGING_PLATFORM,
-            gmail_handler=self.gmail_handler if Config.MESSAGING_PLATFORM == 'gmail' else None,
-            twilio_client=self.twilio_handler.twilio_client if Config.MESSAGING_PLATFORM == 'sms' else None,
-            from_number=Config.TWILIO_PHONE_NUMBER if Config.MESSAGING_PLATFORM == 'sms' else None
-        )
 
         # Register sub-agents (including config and message agents)
         self._register_sub_agents()
@@ -149,8 +130,6 @@ class TARSPhoneAgent:
         self.running = True
         self.websocket_task = None
         self.reminder_task = None
-        self.gmail_task = None
-        self.messaging_platform_task = None
 
     async def _reload_system_instruction(self):
         """Reload system instruction with updated config values."""
@@ -198,17 +177,8 @@ class TARSPhoneAgent:
             "lookup_contact": agents["contacts"],
             "send_notification": agents["notification"],
             "search_conversations": agents.get("conversation_search"),
-            # May be None if messaging not available
-            "send_message": agents.get("message"),
-            "send_email": agents.get("email"),
-            "archive_email": agents.get("email"),
-            "delete_email": agents.get("email"),
-            "make_draft": agents.get("email"),
-            "search_emails": agents.get("email"),
-            "bulk_delete_emails": agents.get("email"),
-            "send_draft": agents.get("email"),
-            "delete_draft": agents.get("email"),
-            "list_drafts": agents.get("email"),
+            # N8N agent for all communication tasks
+            "send_to_n8n": agents.get("n8n"),
             # May be None if twilio not available
             "make_goal_call": agents.get("outbound_call"),
             # InterSessionAgent functions
@@ -307,16 +277,6 @@ class TARSPhoneAgent:
                 self.reminder_checker.start())
             logger.info("Reminder checker started")
 
-            # Start messaging platform polling in background
-            self.messaging_platform_task = asyncio.create_task(
-                self.messaging_platform.start_polling()
-            )
-            logger.info(f"Messaging platform ({Config.MESSAGING_PLATFORM}) started")
-
-            # Maintain backward compatibility - still create gmail_task if using Gmail
-            if Config.MESSAGING_PLATFORM == 'gmail':
-                self.gmail_task = self.messaging_platform_task
-
             # Start WebSocket server for Media Streams in background
             self.websocket_task = asyncio.create_task(
                 self.twilio_handler.start_websocket_server(
@@ -368,10 +328,6 @@ class TARSPhoneAgent:
         # Stop reminder checker
         self.reminder_checker.stop()
 
-        # Stop messaging platform
-        if hasattr(self, 'messaging_platform'):
-            self.messaging_platform.stop_polling()
-
         # Cancel tasks
         if self.reminder_task:
             self.reminder_task.cancel()
@@ -384,21 +340,6 @@ class TARSPhoneAgent:
             self.websocket_task.cancel()
             try:
                 await self.websocket_task
-            except asyncio.CancelledError:
-                pass
-
-        if self.messaging_platform_task:
-            self.messaging_platform_task.cancel()
-            try:
-                await self.messaging_platform_task
-            except asyncio.CancelledError:
-                pass
-
-        # Backward compatibility cleanup
-        if self.gmail_task and self.gmail_task != self.messaging_platform_task:
-            self.gmail_task.cancel()
-            try:
-                await self.gmail_task
             except asyncio.CancelledError:
                 pass
 

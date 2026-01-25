@@ -175,57 +175,23 @@ class ReminderChecker:
                     except Exception as e:
                         logger.error(f"Error making reminder call: {e}")
 
-            # Send via message (SMS)
-            if delivery_method in ['message', 'both']:
-                if self.messaging_handler:
-                    try:
-                        message_text = f"⏰ Reminder: {title}"
-                        await self.messaging_handler.send_message(
-                            to_number=Config.TARGET_PHONE_NUMBER,
-                            message_body=message_text,
-                            medium='sms'
-                        )
-                        logger.info(f"Sent reminder SMS for: {title}")
-                    except Exception as e:
-                        logger.error(f"Error sending reminder SMS: {e}")
-
-            # Send via email
-            if delivery_method in ['email', 'both']:
-                # #region debug log
+            # Send via message (SMS) or email - route through N8N
+            if delivery_method in ['message', 'email', 'both']:
                 try:
-                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                        import json
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "reminder_checker.py:_handle_due_reminder:before_email", "message": "About to send reminder email", "data": {"delivery_method": delivery_method, "has_messaging_handler": self.messaging_handler is not None, "has_gmail_handler": self.messaging_handler.gmail_handler is not None if self.messaging_handler else False, "title": title, "target_email": Config.TARGET_EMAIL}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                except:
-                    pass
-                # #endregion
-                if self.messaging_handler and self.messaging_handler.gmail_handler:
-                    try:
-                        message_text = f"⏰ Reminder: {title}"
-                        result = self.messaging_handler.gmail_handler.send_email(
-                            to_email=Config.TARGET_EMAIL,
-                            subject=f"⏰ TARS Reminder: {title}",
-                            body=message_text
-                        )
-                        # #region debug log
-                        try:
-                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                                import json
-                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "reminder_checker.py:_handle_due_reminder:after_email", "message": "Reminder email sent", "data": {"result": str(result), "title": title}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                        except:
-                            pass
-                        # #endregion
-                        logger.info(f"Sent reminder email for: {title}")
-                    except Exception as e:
-                        # #region debug log
-                        try:
-                            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
-                                import json
-                                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "reminder_checker.py:_handle_due_reminder:email_error", "message": "Error sending reminder email", "data": {"error": str(e), "title": title}, "timestamp": int(__import__('time').time()*1000)}) + '\n')
-                        except:
-                            pass
-                        # #endregion
-                        logger.error(f"Error sending reminder email: {e}")
+                    from sub_agents_tars import N8NAgent
+                    n8n_agent = N8NAgent()
+                    
+                    if delivery_method == 'message':
+                        message = f"Send SMS reminder to {Config.TARGET_PHONE_NUMBER}: ⏰ Reminder: {title}"
+                    elif delivery_method == 'email':
+                        message = f"Send email reminder to {Config.TARGET_EMAIL} with subject '⏰ TARS Reminder: {title}' and body '⏰ Reminder: {title}'"
+                    else:  # both
+                        message = f"Send reminder via SMS to {Config.TARGET_PHONE_NUMBER} and email to {Config.TARGET_EMAIL}: ⏰ Reminder: {title}"
+                    
+                    await n8n_agent.execute({"message": message})
+                    logger.info(f"Sent reminder via N8N for: {title} (method: {delivery_method})")
+                except Exception as e:
+                    logger.error(f"Error sending reminder via N8N: {e}")
 
         # Mark as triggered
         self.db.mark_reminder_triggered(reminder_id)

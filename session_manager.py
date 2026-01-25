@@ -28,21 +28,19 @@ class SessionManager:
     - Termination and cleanup
     """
 
-    def __init__(self, db, router=None, function_handlers=None, gmail_handler=None, messaging_handler=None):
+    def __init__(self, db, router=None, function_handlers=None, messaging_handler=None):
         """Initialize Session Manager.
 
         Args:
             db: Database instance for persistence
             router: Optional MessageRouter for inter-agent communication
             function_handlers: Optional dict of function_name -> handler for GeminiLiveClient
-            gmail_handler: Optional GmailHandler for sending email responses
-            messaging_handler: Optional MessagingHandler for sending SMS responses
+            messaging_handler: Optional MessagingHandler (deprecated - kept for compatibility)
         """
         self.db = db
         self.router = router  # Will be set after router is created
         # Will be set after handlers are registered
         self.function_handlers = function_handlers or {}
-        self.gmail_handler = gmail_handler
         self.messaging_handler = messaging_handler
 
         # Session registries
@@ -258,23 +256,16 @@ class SessionManager:
                                 full_response = ''.join(response_buffer)
                                 response_buffer.clear()
                                 
-                                # Determine medium based on identifier
+                                # Determine medium based on identifier - route through N8N
+                                from sub_agents_tars import N8NAgent
+                                n8n_agent = N8NAgent()
                                 if email_address:
-                                    # Send via email (run in thread since send_email is sync)
-                                    if self.gmail_handler:
-                                        await asyncio.to_thread(
-                                            self.gmail_handler.send_email,
-                                            email_address,
-                                            "TARS Reply",
-                                            full_response
-                                        )
-                                elif phone_number and self.messaging_handler:
-                                    # Send via SMS
-                                    self.messaging_handler.send_message(
-                                        to_number=phone_number,
-                                        message_body=full_response,
-                                        medium='sms'
-                                    )
+                                    n8n_message = f"Send email to {email_address} with subject 'TARS Reply' and body '{full_response}'"
+                                elif phone_number:
+                                    n8n_message = f"Send SMS to {phone_number}: {full_response}"
+                                else:
+                                    n8n_message = f"Send message: {full_response}"
+                                await n8n_agent.execute({"message": n8n_message})
                         except asyncio.CancelledError:
                             # Task was cancelled, ignore
                             pass
@@ -335,6 +326,130 @@ class SessionManager:
             )
             
             return session
+
+    async def create_n8n_session(self, task_message: str) -> AgentSession:
+        """Create a live session for N8N tasks named 'Mate_n8n' with 1-minute timeout.
+        
+        Args:
+            task_message: Task message from N8N (e.g., "call helen")
+            
+        Returns:
+            Created AgentSession instance
+        """
+        async with self._lock:
+            # Check if Mate_n8n session already exists and is active
+            existing_n8n = await self.get_session_by_name("Mate_n8n")
+            if existing_n8n and existing_n8n.is_active():
+                # Update activity and send task to existing session
+                if hasattr(existing_n8n, 'update_activity'):
+                    existing_n8n.update_activity()
+                # Send task message to existing session
+                await existing_n8n.gemini_client.send_text(task_message, end_of_turn=True)
+                logger.info(f"Sent task to existing Mate_n8n session: {task_message[:50]}")
+                return existing_n8n
+            
+            # Generate unique session ID
+            session_id = generate_session_id()
+            session_name = "Mate_n8n"
+            
+            # Create GeminiLiveClient with full permissions (N8N tasks need full access)
+            gemini_client = await self._create_gemini_client(PermissionLevel.FULL)
+            
+            # Create session object first (needed for handlers)
+            session = AgentSession(
+                session_id=session_id,
+                call_sid=f"n8n_{session_id}",
+                session_name=session_name,
+                phone_number=Config.TARGET_PHONE_NUMBER,  # Use Máté's number
+                permission_level=PermissionLevel.FULL,
+                session_type=SessionType.INBOUND_USER,
+                gemini_client=gemini_client,
+                websocket=None,
+                stream_sid=f"stream_{session_id}",
+                purpose=f"N8N task: {task_message}",
+                parent_session_id=None
+            )
+            
+            # Mark as N8N session and activate
+            session.platform = 'n8n'
+            session.last_activity_at = datetime.now()
+            session.activate()
+            
+            # Set up response handlers - update activity on any interaction
+            async def handle_text_response(text: str):
+                """Handle text response from Gemini (for N8N tasks, just log and update activity)."""
+                logger.info(f"Mate_n8n session response: {text[:100]}")
+                session.update_activity()
+            
+            async def handle_user_transcript(text: str):
+                """Handle user transcript (update activity)."""
+                logger.info(f"Mate_n8n session user input: {text[:100]}")
+                session.update_activity()
+            
+            gemini_client.on_text_response = handle_text_response
+            gemini_client.on_user_transcript = handle_user_transcript
+            
+            # Connect to Gemini Live (text-based, no audio)
+            await gemini_client.connect(permission_level=PermissionLevel.FULL.value)
+            
+            # Register session
+            self.sessions[session_id] = session
+            
+            # Track by identifier
+            identifier = f"n8n_{Config.TARGET_PHONE_NUMBER}"
+            if identifier not in self.phone_to_sessions:
+                self.phone_to_sessions[identifier] = []
+            self.phone_to_sessions[identifier].append(session_id)
+            
+            # Persist to database
+            self.db.add_agent_session(session.to_dict())
+            
+            # Register with router
+            if self.router:
+                await self.router.register_session(session)
+            
+            # Inject session context
+            self._inject_session_context(session)
+            
+            # Start 1-minute timeout task
+            asyncio.create_task(self._monitor_n8n_session_timeout(session))
+            
+            # Send initial task message
+            await gemini_client.send_text(task_message, end_of_turn=True)
+            
+            logger.info(f"Created N8N session {session_id[:8]}: {session_name} with task: {task_message[:50]}")
+            
+            return session
+
+    async def _monitor_n8n_session_timeout(self, session: AgentSession):
+        """Monitor N8N session for 1-minute inactivity timeout.
+        
+        Args:
+            session: AgentSession to monitor
+        """
+        timeout_seconds = 60  # 1 minute for N8N sessions
+        
+        while session.is_active():
+            await asyncio.sleep(10)  # Check every 10 seconds
+            
+            if not session.is_active():
+                break
+            
+            # Check if session has been inactive too long
+            if hasattr(session, 'last_activity_at') and session.last_activity_at:
+                time_since_activity = (datetime.now() - session.last_activity_at).total_seconds()
+                if time_since_activity >= timeout_seconds:
+                    logger.info(f"N8N session {session.session_id[:8]} timed out after {timeout_seconds}s inactivity")
+                    await self.terminate_session(session.session_id, reason="n8n_timeout")
+                    break
+            else:
+                # If no activity tracking, use created_at
+                if session.created_at:
+                    time_since_creation = (datetime.now() - session.created_at).total_seconds()
+                    if time_since_creation >= timeout_seconds:
+                        logger.info(f"N8N session {session.session_id[:8]} timed out after {timeout_seconds}s")
+                        await self.terminate_session(session.session_id, reason="n8n_timeout")
+                        break
 
     async def _monitor_message_session_timeout(self, session: AgentSession):
         """Monitor message session for timeout and close if inactive.
@@ -1174,9 +1289,8 @@ class SessionManager:
             summary = await self._generate_summary_with_ai(conversation_text, session)
 
             # Send to Gmail console
-            if hasattr(self, 'gmail_handler') and self.gmail_handler:
-                await self.gmail_handler.send_call_summary(session, summary)
-                logger.info(f"Sent call summary for {session.session_name}")
+            # Call summaries now handled by N8N if needed
+            logger.info(f"Call summary generated for {session.session_name}")
 
         except Exception as e:
             logger.error(f"Error generating call summary: {e}")

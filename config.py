@@ -8,49 +8,9 @@ env_file_path = Path('.env')
 env_file_absolute = env_file_path.resolve()
 env_file_exists = env_file_path.exists()
 
-# Check for duplicate GMAIL_APP_PASSWORD entries in .env file
-gmail_app_password_lines = []
-if env_file_exists:
-    try:
-        with open(env_file_absolute, 'r') as f:
-            # Find ALL GMAIL_APP_PASSWORD lines (there might be multiple)
-            for line_num, line in enumerate(f.readlines(), 1):
-                if line.strip().startswith('GMAIL_APP_PASSWORD='):
-                    password_value = line.split('=', 1)[1].strip() if '=' in line else None
-                    if password_value:
-                        # Remove quotes if present
-                        if password_value.startswith('"') and password_value.endswith('"'):
-                            password_value = password_value[1:-1]
-                        elif password_value.startswith("'") and password_value.endswith("'"):
-                            password_value = password_value[1:-1]
-                        gmail_app_password_lines.append({
-                            "line_num": line_num,
-                            "value": password_value,
-                            "value_first_4": password_value[:4] if len(password_value) >= 4 else ""
-                        })
-    except Exception:
-        pass
-
 # Load environment variables from .env file
 # Use explicit path and override=True to ensure we load from the correct file
 load_dotenv(dotenv_path=env_file_absolute, override=True)
-
-# Handle duplicate GMAIL_APP_PASSWORD entries in .env file
-# If there are multiple entries, use the first one that doesn't start with "TARS" (old password pattern)
-if env_file_exists and len(gmail_app_password_lines) > 1:
-    current_password = os.getenv('GMAIL_APP_PASSWORD', '')
-    # Find the first password that doesn't start with "TARS"
-    selected_password = None
-    for pwd_info in gmail_app_password_lines:
-        if not pwd_info["value_first_4"].startswith("TARS"):
-            selected_password = pwd_info
-            break
-    
-    # If we found a non-TARS password and current password starts with "TARS", use the non-TARS one
-    if selected_password and current_password.startswith("TARS"):
-        # Remove all whitespace (spaces, tabs, newlines) - same as Config class does
-        actual_password = ''.join(selected_password["value"].split())
-        os.environ['GMAIL_APP_PASSWORD'] = actual_password
 
 
 class Config:
@@ -97,20 +57,13 @@ class Config:
     # Format: whatsapp:+1234567890
     WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', 'whatsapp:+14155238886')
 
-    # Gmail Configuration - Using matedort1@gmail.com for everything
-    # GMAIL_USER is used for all operations (receiving, sending, archiving, deleting emails)
-    GMAIL_USER = os.getenv('GMAIL_USER', '').strip()
-    # Remove all whitespace (spaces, tabs, newlines) from app password
-    raw_password = os.getenv('GMAIL_APP_PASSWORD', '')
-    GMAIL_APP_PASSWORD = ''.join(raw_password.split()) if raw_password else ''
-    
-    # Important Email Notification Configuration
+    # Important Email Notification Configuration (deprecated - handled by N8N)
     # Options: call, message, both
     IMPORTANT_EMAIL_NOTIFICATION = os.getenv('IMPORTANT_EMAIL_NOTIFICATION', 'call').lower()
 
-    # Messaging Platform Selection
-    # Options: gmail, sms, whatsapp
-    MESSAGING_PLATFORM = os.getenv('MESSAGING_PLATFORM', 'gmail')
+    # N8N Configuration
+    N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
+    N8N_TARS_WEBHOOK_URL = os.getenv('N8N_TARS_WEBHOOK_URL', '').strip()  # For N8N to send tasks back to TARS
 
     # TARS Personality Configuration (Dynamically Editable)
     HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))  # Default 70%
@@ -132,7 +85,6 @@ class Config:
 
     # Polling & Timing Configuration
     REMINDER_CHECK_INTERVAL = int(os.getenv('REMINDER_CHECK_INTERVAL', '60'))  # Check reminders every N seconds
-    GMAIL_POLL_INTERVAL = int(os.getenv('GMAIL_POLL_INTERVAL', '2'))  # Check Gmail every N seconds
 
     # Conversation & Memory Configuration
     CONVERSATION_HISTORY_LIMIT = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '10'))  # Messages to remember
@@ -233,7 +185,6 @@ class Config:
         cls.ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'
         cls.ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
         cls.REMINDER_CHECK_INTERVAL = int(os.getenv('REMINDER_CHECK_INTERVAL', '60'))
-        cls.GMAIL_POLL_INTERVAL = int(os.getenv('GMAIL_POLL_INTERVAL', '2'))
         cls.CONVERSATION_HISTORY_LIMIT = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '10'))
         cls.MAX_FUNCTION_CALLS = int(os.getenv('MAX_FUNCTION_CALLS', '5'))
         cls.ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'true').lower() == 'true'

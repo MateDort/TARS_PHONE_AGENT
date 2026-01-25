@@ -9,9 +9,15 @@ tunnels:
     proto: http
     addr: 5002
     # This is for Flask webhooks
+    request_header:
+      add:
+        - "ngrok-skip-browser-warning: true"
   
   websocket:
     proto: http
     addr: 5001
     # This is for Twilio Media Streams WebSocket
+    request_header:
+      add:
+        - "ngrok-skip-browser-warning: true"
 

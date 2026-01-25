@@ -23,11 +23,6 @@ GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=models/gemini-2.5-flash-native-audio-preview-12-2025
 GEMINI_VOICE=Puck
 
-# Gmail Configuration (Required for email console)
-# All email operations use matedort1@gmail.com (receiving, sending, archiving, deleting)
-GMAIL_USER=matedort1@gmail.com
-GMAIL_APP_PASSWORD=your_gmail_app_password_here
-
 # TARGET_EMAIL is the user's email address (e.g., matedort1@gmail.com) - emails FROM this address are processed
 TARGET_EMAIL=matedort1@gmail.com
 
@@ -56,13 +51,16 @@ WEBSOCKET_URL=
 AUDIO_SAMPLE_RATE=8000
 
 # ============================================================
-# MESSAGING PLATFORM CONFIGURATION - LINES 47-51
+# N8N INTEGRATION CONFIGURATION
 # ============================================================
 
-# Primary messaging platform (gmail, sms, whatsapp)
-MESSAGING_PLATFORM=gmail
+# N8N Webhook URL (for TARS to send tasks to N8N)
+N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/tars
 
-# Enable/disable messaging features
+# N8N → TARS Webhook URL (for N8N to send tasks back to TARS)
+N8N_TARS_WEBHOOK_URL=http://your-tars-instance.com/webhook/n8n
+
+# Enable/disable messaging features (deprecated - handled by N8N)
 ENABLE_SMS=true
 ENABLE_WHATSAPP=true
 WHATSAPP_NUMBER=whatsapp:+14155238886
@@ -92,14 +90,11 @@ MAX_CONCURRENT_SESSIONS=10
 AUTO_CALL=false
 
 # ============================================================
-# POLLING & TIMING CONFIGURATION (NEW)
+# POLLING & TIMING CONFIGURATION
 # ============================================================
 
 # Reminder checker interval (seconds) - how often to check for due reminders
 REMINDER_CHECK_INTERVAL=60
-
-# Gmail polling interval (seconds) - how often to check for new emails
-GMAIL_POLL_INTERVAL=2
 
 # ============================================================
 # USER INFORMATION
@@ -117,11 +112,9 @@ TARGET_NAME=Máté Dort
 3. **TWILIO_PHONE_NUMBER** - Your Twilio phone number
 4. **TARGET_PHONE_NUMBER** - Your personal phone number (for authentication)
 5. **GEMINI_API_KEY** - Google Gemini API key
-6. **GMAIL_USER** - Gmail account for IMAP operations (checking, archiving, deleting emails) - e.g., matedort1@gmail.com
-7. **GMAIL_APP_PASSWORD** - Gmail app password for GMAIL_USER account
-8. **GMAIL_TARS_EMAIL** - TARS email address for SMTP operations (sending emails FROM TARS)
-9. **GMAIL_TARS_APP_PASSWORD** - Gmail app password for TARS email account
-10. **TARGET_EMAIL** - User's email address (e.g., matedort1@gmail.com) - emails FROM this address are processed by TARS
+6. **TARGET_EMAIL** - User's email address (e.g., matedort1@gmail.com) - emails FROM this address are processed by TARS
+7. **N8N_WEBHOOK_URL** - N8N webhook URL for TARS to send communication tasks
+8. **N8N_TARS_WEBHOOK_URL** - TARS webhook URL for N8N to send tasks back to TARS
 
 ### Optional Settings (with defaults)
 9. **GEMINI_MODEL** - Gemini model name (default: `models/gemini-2.5-flash-native-audio-preview-12-2025`)
@@ -164,7 +157,6 @@ TARGET_NAME=Máté Dort
 
 ### Performance & Timing
 - **REMINDER_CHECK_INTERVAL** - How often to check reminders (seconds, default: 60)
-- **GMAIL_POLL_INTERVAL** - How often to check Gmail (seconds, default: 2)
 - **SESSION_TIMEOUT** - Session timeout in minutes (default: 30)
 - **FUNCTION_CALL_TIMEOUT** - Function call timeout in seconds (default: 30)
 

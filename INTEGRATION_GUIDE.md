@@ -284,12 +284,12 @@ async def _handle_due_reminder(self, reminder: dict):
             )
 
         if delivery_method in ['message', 'both']:
-            # Send SMS reminder
-            await self.messaging_handler.send_message(
-                to_number=Config.TARGET_PHONE_NUMBER,
-                message=f"⏰ Reminder: {reminder['title']}",
-                medium='sms'
-            )
+            # Send SMS reminder via N8N
+            from sub_agents_tars import N8NAgent
+            n8n_agent = N8NAgent()
+            await n8n_agent.execute({
+                "message": f"Send SMS to {Config.TARGET_PHONE_NUMBER}: ⏰ Reminder: {reminder['title']}"
+            })
 ```
 
 ---

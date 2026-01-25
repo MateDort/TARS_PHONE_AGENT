@@ -21,9 +21,9 @@ def authenticate_phone_number(phone: str) -> PermissionLevel:
     """
     # Check if input is an email address
     if '@' in phone:
-        # Allow access if sender matches TARGET_EMAIL or if user is emailing themselves (GMAIL_USER)
+        # Allow access if sender matches TARGET_EMAIL
         allowed_emails = [e.lower().strip()
-                          for e in [Config.TARGET_EMAIL, Config.GMAIL_USER] if e]
+                          for e in [Config.TARGET_EMAIL] if e]
         if phone.lower().strip() in allowed_emails:
             logger.info(f"Email {phone} authenticated as Máté (FULL access)")
             return PermissionLevel.FULL

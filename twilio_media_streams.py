@@ -65,7 +65,12 @@ class TwilioMediaStreamsHandler:
     def _setup_routes(self):
         """Set up Flask routes for Twilio webhooks."""
 
-        @self.app.route('/webhook/voice', methods=['POST'])
+        @self.app.route('/', methods=['GET'])
+        def root():
+            """Handle root requests (ngrok browser verification)."""
+            return Response('TARS Webhook Server', mimetype='text/plain')
+
+        @self.app.route('/webhook/voice', methods=['POST', 'GET'])
         def voice_webhook():
             """Handle incoming call - start media stream."""
             try:
@@ -77,13 +82,12 @@ class TwilioMediaStreamsHandler:
                 print(f"   From: {from_number}")
                 print(f"   To: {to_number}")
                 print(f"   Call SID: {call_sid}")
+                logger.info(f"Voice webhook called: CallSid={call_sid}, From={from_number}, To={to_number}")
 
                 response = VoiceResponse()
 
-                # Optional: Play a brief greeting
-                response.say("Hello, connecting you now", voice='Polly.Joanna')
-
-                # Connect to Media Streams WebSocket
+                # Connect to Media Streams WebSocket immediately
+                # Note: Say removed - it was causing calls to hang up before WebSocket connection
                 # WebSocket runs on port 5001 with its own ngrok URL
                 connect = Connect()
                 if Config.WEBSOCKET_URL:
@@ -240,6 +244,45 @@ class TwilioMediaStreamsHandler:
             # Return empty response (Twilio will receive reply separately)
             return Response('', status=200)
 
+        @self.app.route('/webhook/n8n', methods=['POST'])
+        def n8n_webhook():
+            """Handle incoming tasks from N8N - creates 'Mate_n8n' live session."""
+            import json
+            try:
+                data = request.get_json() or request.form.to_dict()
+                task_message = data.get('message') or data.get('task') or data.get('text', '')
+                
+                if not task_message:
+                    logger.warning("N8N webhook received empty message")
+                    return Response(json.dumps({"error": "No message provided"}), status=400, mimetype='application/json')
+                
+                logger.info(f"Received task from N8N: {task_message[:100]}")
+                
+                # Create N8N session asynchronously
+                async def create_n8n_session():
+                    try:
+                        # Create a special session for N8N tasks
+                        session = await self.session_manager.create_n8n_session(
+                            task_message=task_message
+                        )
+                        logger.info(f"Created N8N session: {session.session_name}")
+                    except Exception as e:
+                        logger.error(f"Error creating N8N session: {e}")
+                
+                # Run in background
+                if self.main_loop and self.main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        create_n8n_session(), self.main_loop)
+                else:
+                    logger.error("Cannot create N8N session: Main event loop not available")
+                    return Response(json.dumps({"error": "System not ready"}), status=503, mimetype='application/json')
+                
+                return Response(json.dumps({"status": "accepted", "message": "Task received"}), status=200, mimetype='application/json')
+                
+            except Exception as e:
+                logger.error(f"Error in N8N webhook: {e}")
+                return Response(json.dumps({"error": str(e)}), status=500, mimetype='application/json')
+
         @self.app.route('/webhook/whatsapp', methods=['POST'])
         def whatsapp_webhook():
             """Handle incoming WhatsApp messages."""
@@ -334,6 +377,11 @@ class TwilioMediaStreamsHandler:
 
                         # CREATE SESSION via SessionManager
                         # This handles authentication, naming, and permission-filtered function declarations
+                        # #region agent log
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json, time
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"twilio_media_streams.py:376","message":"Creating session - before","data":{"call_sid":call_sid,"auth_phone":auth_phone},"timestamp":int(time.time()*1000)})+"\n")
+                        # #endregion
                         session = await self.session_manager.create_session(
                             call_sid=call_sid,
                             phone_number=auth_phone,
@@ -342,6 +390,11 @@ class TwilioMediaStreamsHandler:
                             purpose=self.pending_reminder if "CALL OBJECTIVE" in (
                                 self.pending_reminder or "") else None
                         )
+                        # #region agent log
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json, time
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"twilio_media_streams.py:388","message":"Session created - after","data":{"session_name":session.session_name,"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        # #endregion
 
                         print(
                             f"   👤 Session: {session.session_name} ({session.permission_level.value} access)")
@@ -354,7 +407,17 @@ class TwilioMediaStreamsHandler:
 
                         # Connect to Gemini with permission level
                         print(f"   Connecting to Gemini Live...")
+                        # #region agent log
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json, time
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"twilio_media_streams.py:396","message":"Connecting to Gemini - before","data":{"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        # #endregion
                         await call_gemini_client.connect(permission_level=session.permission_level.value)
+                        # #region agent log
+                        with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                            import json, time
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"twilio_media_streams.py:399","message":"Gemini connected - after","data":{"permission_level":session.permission_level.value},"timestamp":int(time.time()*1000)})+"\n")
+                        # #endregion
                         print(
                             f"   ✅ Gemini Live connected (permission: {session.permission_level.value})")
 
@@ -452,23 +515,19 @@ class TwilioMediaStreamsHandler:
                                                 logger.info(f"User confirmed sending full response ({response_chars} chars) via email")
                                                 
                                                 # Send full response via email
-                                                if self.messaging_handler and self.messaging_handler.gmail_handler:
-                                                    await self.messaging_handler.gmail_handler.send_detailed_response(
-                                                        session_id=session.session_id,
-                                                        content=full_response,
-                                                        response_type="Detailed Response"
+                                                # Detailed responses now handled by N8N
+                                                # Deprecated code path - removed
+                                                
+                                                # Clear pending response
+                                                session._pending_long_response = None
+                                                session._pending_response_chars = None
+                                                
+                                                # Confirm to user via audio
+                                                if session.gemini_client:
+                                                    await session.gemini_client.send_text(
+                                                        "I've sent the full detailed response to your email.",
+                                                        end_of_turn=True
                                                     )
-                                                    
-                                                    # Clear pending response
-                                                    session._pending_long_response = None
-                                                    session._pending_response_chars = None
-                                                    
-                                                    # Confirm to user via audio
-                                                    if session.gemini_client:
-                                                        await session.gemini_client.send_text(
-                                                            "I've sent the full detailed response to your email.",
-                                                            end_of_turn=True
-                                                        )
                                                 
                                         user_buffer.clear()
                             except Exception as e:
@@ -726,13 +785,33 @@ Keep it concise and natural for speaking."""
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON from Twilio: {e}")
+                    # #region agent log
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json, time
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"twilio_media_streams.py:793","message":"JSON decode error","data":{"error":str(e)},"timestamp":int(time.time()*1000)})+"\n")
+                    # #endregion
                 except Exception as e:
                     logger.error(f"Error processing Twilio message: {e}")
+                    # #region agent log
+                    with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                        import json, time
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"twilio_media_streams.py:796","message":"Error processing message","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(time.time()*1000)})+"\n")
+                    # #endregion
 
         except websockets.exceptions.ConnectionClosed:
             logger.info("Media stream connection closed")
+            # #region agent log
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import json, time
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"twilio_media_streams.py:818","message":"WebSocket connection closed","data":{"call_sid":call_sid},"timestamp":int(time.time()*1000)})+"\n")
+            # #endregion
         except Exception as e:
             logger.error(f"Error in media stream handler: {e}")
+            # #region agent log
+            with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                import json, time
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"twilio_media_streams.py:820","message":"Exception in handle_media_stream","data":{"error":str(e),"error_type":type(e).__name__,"call_sid":call_sid},"timestamp":int(time.time()*1000)})+"\n")
+            # #endregion
         finally:
             # Cleanup - disconnect Gemini client and terminate session
             if call_gemini_client:
@@ -852,8 +931,21 @@ Keep it concise and natural for speaking."""
         logger.info(
             f"Starting Media Streams WebSocket server on {host}:{port}")
 
+        async def websocket_handler(websocket, path=None):
+            """Wrapper to log connection attempts."""
+            # #region agent log
+            try:
+                with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
+                    import json, time
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"twilio_media_streams.py:websocket_handler","message":"WebSocket connection attempt","data":{"remote_addr":websocket.remote_address if hasattr(websocket, 'remote_address') else None,"path":path},"timestamp":int(time.time()*1000)})+"\n")
+            except:
+                pass
+            # #endregion
+            logger.info(f"WebSocket connection attempt from {websocket.remote_address if hasattr(websocket, 'remote_address') else 'unknown'}")
+            await self.handle_media_stream(websocket)
+
         self.websocket_server = await websockets.serve(
-            self.handle_media_stream,
+            websocket_handler,
             host,
             port
         )

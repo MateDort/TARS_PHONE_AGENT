@@ -339,63 +339,39 @@ class MessageRouter:
         # Get callback method from config
         callback_method = getattr(Config, 'CALLBACK_REPORT', 'message').lower()
 
-        # Send via message (SMS)
-        if callback_method in ['message', 'both']:
+        # Send via message (SMS) or email - route through N8N
+        if callback_method in ['message', 'email', 'both']:
             try:
-                # Format SMS text
+                from sub_agents_tars import N8NAgent
+                n8n_agent = N8NAgent()
+                
+                # Format message based on type
                 if message_type == "reminder":
-                    sms_text = f"⏰ Reminder: {message_body}"
+                    formatted_message = f"⏰ Reminder: {message_body}"
                 elif message_type == "notification":
-                    sms_text = f"📢 {message_body}"
+                    formatted_message = f"📢 {message_body}"
                 elif message_type == "call_completion_report":
-                    sms_text = f"📞 Call Report:\n\n{message_body}"
+                    formatted_message = f"📞 Call Report:\n\n{message_body}"
                 else:
-                    sms_text = f"Message from {from_name}:\n\n{message_body}"
-
-                # Send SMS
-                self.messaging_handler.send_message(
-                    to_number=Config.TARGET_PHONE_NUMBER,
-                    message_body=sms_text,
-                    medium='sms'
-                )
-
+                    formatted_message = f"Message from {from_name}:\n\n{message_body}"
+                
+                # Build N8N request based on delivery method
+                if callback_method == 'message':
+                    n8n_message = f"Send SMS to {Config.TARGET_PHONE_NUMBER}: {formatted_message}"
+                elif callback_method == 'email':
+                    subject = f"TARS {message_type.title()}" if message_type != "direct" else f"Message from {from_name}"
+                    n8n_message = f"Send email to {Config.TARGET_EMAIL} with subject '{subject}' and body '{formatted_message}'"
+                else:  # both
+                    subject = f"TARS {message_type.title()}" if message_type != "direct" else f"Message from {from_name}"
+                    n8n_message = f"Send SMS to {Config.TARGET_PHONE_NUMBER} and email to {Config.TARGET_EMAIL} with subject '{subject}': {formatted_message}"
+                
+                await n8n_agent.execute({"message": n8n_message})
                 logger.info(
-                    f"Sent fallback SMS for message {msg['message_id'][:8]}"
+                    f"Sent fallback via N8N for message {msg['message_id'][:8]} (method: {callback_method})"
                 )
 
             except Exception as e:
-                logger.error(f"Failed to send fallback SMS: {e}")
-
-        # Send via email
-        if callback_method in ['email', 'both']:
-            try:
-                if self.messaging_handler and self.messaging_handler.gmail_handler:
-                    # Format email subject and body
-                    if message_type == "reminder":
-                        subject = f"⏰ TARS Reminder"
-                        email_body = message_body
-                    elif message_type == "notification":
-                        subject = f"📢 TARS Notification"
-                        email_body = message_body
-                    elif message_type == "call_completion_report":
-                        subject = f"📞 Call Report"
-                        email_body = message_body
-                    else:
-                        subject = f"Message from {from_name}"
-                        email_body = message_body
-
-                    self.messaging_handler.gmail_handler.send_email(
-                        to_email=Config.TARGET_EMAIL,
-                        subject=subject,
-                        body=email_body
-                    )
-
-                    logger.info(
-                        f"Sent fallback email for message {msg['message_id'][:8]}"
-                    )
-
-            except Exception as e:
-                logger.error(f"Failed to send fallback email: {e}")
+                logger.error(f"Failed to send fallback via N8N: {e}")
 
         # Send via call
         if callback_method in ['call', 'both']:
