@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import json
 import sys
-from config import Config
+from core.config import Config
 
 async def test_n8n_connection():
     """Test connection to N8N webhook."""

@@ -5,15 +5,15 @@ import signal
 import sys
 import threading
 import time
-from config import Config
-from database import Database
-from gemini_live_client import GeminiLiveClient
-from twilio_media_streams import TwilioMediaStreamsHandler
+from core.config import Config
+from core.database import Database
+from communication.gemini_live_client import GeminiLiveClient
+from communication.twilio_media_streams import TwilioMediaStreamsHandler
 from sub_agents_tars import get_all_agents, get_function_declarations
-from reminder_checker import ReminderChecker
-from translations import format_text
-from session_manager import SessionManager
-from message_router import MessageRouter
+from communication.reminder_checker import ReminderChecker
+from utils.translations import format_text
+from core.session_manager import SessionManager
+from communication.message_router import MessageRouter
 
 # Configure logging
 logging.basicConfig(
@@ -70,7 +70,7 @@ class TARSPhoneAgent:
         logger.info("SessionManager initialized")
 
         # Initialize messaging handler for SMS/WhatsApp (needed for router)
-        from messaging_handler import MessagingHandler
+        from communication.messaging_handler import MessagingHandler
         self.messaging_handler = MessagingHandler(
             database=self.db,
             twilio_client=None,  # Will be set after twilio_handler created

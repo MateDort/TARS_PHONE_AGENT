@@ -110,14 +110,15 @@ class Config:
     REQUIRE_PIN_FOR_UNKNOWN = os.getenv('REQUIRE_PIN_FOR_UNKNOWN', 'false').lower() == 'true'
     ALLOW_UNKNOWN_CALLERS = os.getenv('ALLOW_UNKNOWN_CALLERS', 'true').lower() == 'true'
     MAX_UNKNOWN_CALL_DURATION = int(os.getenv('MAX_UNKNOWN_CALL_DURATION', '5'))  # Minutes
+    CONFIRMATION_CODE = os.getenv('CONFIRMATION_CODE', '1234')  # Code for destructive operations
 
     # Approval & Workflow Configuration
     ENABLE_APPROVAL_REQUESTS = os.getenv('ENABLE_APPROVAL_REQUESTS', 'true').lower() == 'true'
     APPROVAL_TIMEOUT_MINUTES = int(os.getenv('APPROVAL_TIMEOUT_MINUTES', '5'))  # Minutes until timeout
 
-    # Long Message Auto-Routing Configuration
-    LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))  # Characters threshold for auto-email routing
-    AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'  # Enable auto-routing long messages to email
+    # Long Message Auto-Routing Configuration (DISABLED)
+    # LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))  # Characters threshold for auto-email routing
+    # AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'  # Enable auto-routing long messages to email
 
     # Conversation Search Configuration
     CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'  # Enable conversation search features
@@ -199,9 +200,10 @@ class Config:
         cls.ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'true').lower() == 'true'
         cls.ENABLE_FUNCTION_CALLING = os.getenv('ENABLE_FUNCTION_CALLING', 'true').lower() == 'true'
         cls.LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-        cls.LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))
-        cls.AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'
+        # cls.LONG_MESSAGE_THRESHOLD = int(os.getenv('LONG_MESSAGE_THRESHOLD', '500'))
+        # cls.AUTO_EMAIL_ROUTING = os.getenv('AUTO_EMAIL_ROUTING', 'true').lower() == 'true'
         cls.CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'
+        cls.CONFIRMATION_CODE = os.getenv('CONFIRMATION_CODE', '1234')
         cls.MESSAGE_SESSION_TIMEOUT = int(os.getenv('MESSAGE_SESSION_TIMEOUT', '120'))
         cls.IMPORTANT_EMAIL_NOTIFICATION = os.getenv('IMPORTANT_EMAIL_NOTIFICATION', 'call').lower()
         cls.GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')

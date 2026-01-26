@@ -5,10 +5,10 @@ import os
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
-from gemini_live_client import SubAgent
-from database import Database
-from translations import get_text, format_text
-from config import Config
+from communication.gemini_live_client import SubAgent
+from core.database import Database
+from utils.translations import get_text, format_text
+from core.config import Config
 import re
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ class ReminderAgent(SubAgent):
 
         Args:
             args: {
-                "action": "create|list|delete|edit",
+                "action": "create|list|delete|delete_all|edit",
                 "title": str,
                 "time": str (e.g., "3pm", "tomorrow at 8am", "every day at 1pm"),
                 "reminder_id": int (for delete/edit)
@@ -304,6 +304,9 @@ class ReminderAgent(SubAgent):
 
         elif action == "delete":
             return await self._delete_reminder(args)
+
+        elif action == "delete_all":
+            return await self._delete_all_reminders()
 
         elif action == "edit":
             return await self._edit_reminder(args)
@@ -395,6 +398,17 @@ class ReminderAgent(SubAgent):
             return f"{get_text('reminder_deleted')}: {match['title']}"
         else:
             return get_text('reminder_not_found')
+
+    async def _delete_all_reminders(self) -> str:
+        """Delete all reminders."""
+        count = self.db.delete_all_reminders()
+        
+        if count == 0:
+            return "No reminders to delete, sir."
+        elif count == 1:
+            return "Deleted 1 reminder, sir."
+        else:
+            return f"Deleted all {count} reminders, sir."
 
     async def _edit_reminder(self, args: Dict[str, Any]) -> str:
         """Edit a reminder - can update title, time, or both."""
@@ -1551,7 +1565,7 @@ class ConversationSearchAgent(SubAgent):
         if not query:
             return "Please provide a search query, sir."
 
-        from config import Config
+        from core.config import Config
 
         if action == "search_by_date":
             results = self.db.search_conversations_by_date(query, limit=limit)
@@ -1828,7 +1842,7 @@ class ProgrammerAgent(SubAgent):
             description="Manages programming projects, executes terminal commands, edits code, and handles GitHub operations"
         )
         self.db = db
-        from github_operations import GitHubOperations
+        from utils.github_operations import GitHubOperations
         self.github = GitHubOperations()
         
         # Safe commands that don't need confirmation
@@ -2145,11 +2159,15 @@ class ProgrammerAgent(SubAgent):
             if not command:
                 return "Please provide a command to execute, sir."
             
-            # Check if command is safe
+            # Check if command is safe and verify confirmation code
             needs_confirmation = self._is_destructive_command(command)
             
             if needs_confirmation:
-                return f"This command requires confirmation: {command}\nPlease confirm to proceed, sir."
+                from core.security import verify_confirmation_code
+                confirmation_code = args.get('confirmation_code', '')
+                
+                if not verify_confirmation_code(confirmation_code):
+                    return f"This command requires confirmation code: {command}\nPlease provide your confirmation code to proceed, sir."
             
             # Log operation
             session_id = args.get('session_id', 'unknown')
@@ -2231,7 +2249,7 @@ class ProgrammerAgent(SubAgent):
         elif action == 'edit':
             return await self._edit_file(file_path, args.get('changes_description', ''))
         elif action == 'delete':
-            return await self._delete_file(file_path)
+            return await self._delete_file(file_path, args.get('confirmation_code', ''))
         else:
             return f"Unknown file action: {action}, sir."
 
@@ -2347,9 +2365,25 @@ Respond with ONLY the complete modified file content, no explanations."""
             logger.error(f"Error editing file: {e}")
             return f"Error editing file: {str(e)}, sir."
 
-    async def _delete_file(self, file_path: str) -> str:
-        """Delete a file (requires confirmation)."""
-        return f"Deleting {file_path} requires confirmation. Please confirm to proceed, sir."
+    async def _delete_file(self, file_path: str, confirmation_code: str = '') -> str:
+        """Delete a file (requires confirmation code)."""
+        from core.security import verify_confirmation_code
+        
+        if not verify_confirmation_code(confirmation_code):
+            return f"Deleting {file_path} requires confirmation code. Please provide your confirmation code to proceed, sir."
+        
+        # Proceed with deletion
+        try:
+            file_path_obj = Path(file_path).expanduser()
+            if not file_path_obj.exists():
+                return f"File {file_path} does not exist, sir."
+            
+            file_path_obj.unlink()
+            logger.info(f"Deleted file: {file_path}")
+            return f"Deleted file {file_path}, sir."
+        except Exception as e:
+            logger.error(f"Error deleting file: {e}")
+            return f"Error deleting file: {str(e)}, sir."
 
     async def github_operation(self, args: Dict[str, Any]) -> str:
         """Handle GitHub operations.
@@ -2538,13 +2572,13 @@ def get_function_declarations() -> list:
         },
         {
             "name": "manage_reminder",
-            "description": "Create, list, delete, or edit reminders. Supports recurring reminders (daily, weekly). Examples: 'remind me to workout every day at 6am', 'what reminders do I have', 'delete my 8am reminder', 'change the 9am reminder to 10am'",
+            "description": "Create, list, delete, delete all, or edit reminders. Supports recurring reminders (daily, weekly). Examples: 'remind me to workout every day at 6am', 'what reminders do I have', 'delete my 8am reminder', 'delete all reminders', 'change the 9am reminder to 10am'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: create, list, delete, or edit"
+                        "description": "Action: create, list, delete, delete_all, or edit"
                     },
                     "title": {
                         "type": "STRING",
@@ -2985,7 +3019,7 @@ def get_function_declarations() -> list:
         },
         {
             "name": "execute_terminal",
-            "description": "Execute terminal commands in a project directory. Safe commands (ls, pwd, git status, npm install, pip install) execute immediately. Destructive commands (rm, git push, sudo) require confirmation. Commands timeout after 60 seconds by default.",
+            "description": "Execute terminal commands in a project directory. Safe commands (ls, pwd, git status, npm install, pip install) execute immediately. Destructive commands (rm, git push, sudo) require confirmation_code parameter.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -3000,6 +3034,10 @@ def get_function_declarations() -> list:
                     "timeout": {
                         "type": "INTEGER",
                         "description": "Maximum seconds to wait for command (default: 60, max: 600)"
+                    },
+                    "confirmation_code": {
+                        "type": "STRING",
+                        "description": "Confirmation code required for destructive commands (rm, sudo, etc.). Ask user for their confirmation code if needed."
                     }
                 },
                 "required": ["command"]
@@ -3007,13 +3045,13 @@ def get_function_declarations() -> list:
         },
         {
             "name": "edit_code",
-            "description": "Read, create, edit, or delete code files using AI. For edit action, describe the changes you want (e.g., 'change background color to blue', 'fix the bug in login function', 'add error handling'). AI will analyze the code, generate changes, and show a diff before applying.",
+            "description": "Read, create, edit, or delete code files using AI. For edit action, describe the changes you want (e.g., 'change background color to blue', 'fix the bug in login function', 'add error handling'). AI will analyze the code, generate changes, and show a diff before applying. Delete action requires confirmation_code.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: 'read' (view file), 'create' (new file), 'edit' (modify with AI), 'delete' (remove file)"
+                        "description": "Action: 'read' (view file), 'create' (new file), 'edit' (modify with AI), 'delete' (remove file - requires confirmation_code)"
                     },
                     "file_path": {
                         "type": "STRING",
@@ -3026,6 +3064,10 @@ def get_function_declarations() -> list:
                     "content": {
                         "type": "STRING",
                         "description": "For create action: the file content to write"
+                    },
+                    "confirmation_code": {
+                        "type": "STRING",
+                        "description": "Confirmation code required for delete action. Ask user for their confirmation code when deleting files."
                     }
                 },
                 "required": ["action", "file_path"]
@@ -3033,7 +3075,7 @@ def get_function_declarations() -> list:
         },
         {
             "name": "github_operation",
-            "description": "GitHub operations: initialize git repo, clone repository, push changes (requires confirmation), pull changes, create new repository (requires confirmation), list repositories. Handles git workflow including commits.",
+            "description": "GitHub operations: initialize git repo, clone repository, push changes, pull changes, create new repository, list repositories. Handles git workflow including commits. Note: Push and create_repo actions can be performed without confirmation_code since you're authorized.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
@@ -3060,6 +3102,10 @@ def get_function_declarations() -> list:
                     "working_directory": {
                         "type": "STRING",
                         "description": "Directory for git operations (default: current project)"
+                    },
+                    "confirmation_code": {
+                        "type": "STRING",
+                        "description": "Optional confirmation code for sensitive operations (not required for you)"
                     }
                 },
                 "required": ["action"]

@@ -4,7 +4,7 @@ import os
 import subprocess
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from config import Config
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 

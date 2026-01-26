@@ -2,9 +2,9 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from database import Database
+from core.database import Database
 from typing import Optional, Callable
-from config import Config
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 

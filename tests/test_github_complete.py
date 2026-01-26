@@ -26,7 +26,7 @@ def main():
         return False
     
     try:
-        from config import Config
+        from core.config import Config
         print("✅ Config imported successfully")
     except ImportError as e:
         print(f"❌ Config import failed: {e}")
@@ -62,7 +62,7 @@ def main():
     # Test 4: Test GitHubOperations class
     print_section("4. Testing GitHubOperations Module")
     try:
-        from github_operations import GitHubOperations
+        from utils.github_operations import GitHubOperations
         gh_ops = GitHubOperations()
         print(f"✅ GitHubOperations initialized")
         print(f"   Is authenticated: {gh_ops.is_authenticated()}")

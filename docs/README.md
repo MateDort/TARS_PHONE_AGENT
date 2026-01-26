@@ -16,12 +16,12 @@
 
 - [Overview](#overview)
 - [Features](#features)
+- [Quick Start](#quick-start)
+- [Documentation](#documentation)
 - [System Architecture](#system-architecture)
-- [User Flows](#user-flows)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [Usage](#usage)
-- [N8N Integration](#n8n-integration)
+- [Usage Examples](#usage-examples)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 
@@ -37,6 +37,39 @@
 - **External automation** via N8N for email, messaging, and calendar
 
 TARS maintains a British, respectful personality that can be dynamically adjusted, manages your contacts and reminders locally, and delegates communication tasks to N8N for seamless integration with Gmail, Telegram, Discord, and Calendar services.
+
+---
+
+## 🚀 Quick Start
+
+### For Users
+1. **First Time**: Follow [Installation](#installation)
+2. **Usage Guide**: See [Usage Examples](#usage-examples)
+3. **Troubleshooting**: Check [Troubleshooting](#troubleshooting)
+
+### For Developers
+1. **Understanding the System**: Read [ARCHITECTURE.md](ARCHITECTURE.md) - Complete system organization
+2. **Agent Reference**: See [AGENTS_REFERENCE.md](AGENTS_REFERENCE.md) - All 20 functions explained
+3. **Adding Features**: Follow [ARCHITECTURE.md - How to Add a New Agent](ARCHITECTURE.md#-how-to-add-a-new-agent)
+4. **Programmer Agent**: See [PROGRAMMER_SETUP.md](PROGRAMMER_SETUP.md) - Code management capabilities
+
+---
+
+## 📚 Documentation
+
+### Core Documentation
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System organization, file structure, how agents work
+- **[AGENTS_REFERENCE.md](AGENTS_REFERENCE.md)** - Quick reference for all 9 agents and 20 functions
+- **[PROGRAMMER_SETUP.md](PROGRAMMER_SETUP.md)** - Terminal access, file operations, GitHub integration
+- **[BUGFIXES.md](BUGFIXES.md)** - Recent bug fixes and solutions
+
+### Setup Guides
+- **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)** - Developer integration examples
+- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Implementation details
+
+### Reference
+- **[TARS.md](TARS.md)** - TARS personality definition
+- **[Máté.md](Máté.md)** - User information reference
 
 ---
 
@@ -59,6 +92,24 @@ TARS maintains a British, respectful personality that can be dynamically adjuste
 - **Conversation Search** - Semantic and date-based conversation retrieval
 - **Call Summaries** - AI-generated summaries of completed calls
 - **Goal-Based Calling** - Make calls with specific objectives (appointments, inquiries, follow-ups)
+- **🆕 Programmer Agent** - Terminal access, file operations, GitHub integration, project management
+
+### Agent System (20 Functions)
+TARS uses a modular agent system with 9 specialized agents:
+
+| Agent | Functions | Purpose |
+|-------|-----------|---------|
+| **ConfigAgent** | 1 | Adjust personality settings |
+| **ReminderAgent** | 1 | Time-based reminders |
+| **ContactsAgent** | 1 | Phone number lookup |
+| **NotificationAgent** | 1 | Send SMS/WhatsApp |
+| **OutboundCallAgent** | 1 | Initiate calls |
+| **InterSessionAgent** | 8 | Multi-session coordination |
+| **ConversationSearchAgent** | 1 | Search past conversations |
+| **KIPPAgent** | 1 | N8N workflow triggers |
+| **ProgrammerAgent** ⭐ | 4 | Code & GitHub operations |
+
+**[→ See all functions in AGENTS_REFERENCE.md](AGENTS_REFERENCE.md)**
 
 ---
 
@@ -557,7 +608,7 @@ TARS supports runtime configuration changes without restart:
 
 ---
 
-## 📖 Usage
+## 💡 Usage Examples
 
 ### Phone Call Interactions
 
@@ -620,6 +671,34 @@ TARS can coordinate between sessions:
 - Barber session confirms with barber
 ```
 
+### Programmer Agent Examples 🆕
+
+**Project Management:**
+```
+You: "List my projects"
+TARS: "You have 31 projects: TARS_PHONE_AGENT, Simple Portfolio, ada_v2..."
+
+You: "Create a portfolio website"
+TARS: "Created vanilla-js project 'portfolio' at /Users/matedort/portfolio, sir."
+```
+
+**File Operations:**
+```
+You: "Create an index.html with Hello World"
+TARS: "Created file index.html, sir."
+
+You: "Run npm install in my website"
+TARS: "Command executed successfully..."
+```
+
+**GitHub Integration:**
+```
+You: "Push to GitHub as my-portfolio-repo"
+TARS: "Repository created and pushed to GitHub, sir."
+```
+
+**[→ See full programmer guide in PROGRAMMER_SETUP.md](PROGRAMMER_SETUP.md)**
+
 ---
 
 ## 🔗 N8N Integration
@@ -661,103 +740,50 @@ See [N8N_SETUP.md](N8N_SETUP.md) for detailed setup instructions.
 
 ## 🛠️ Development
 
-### Project Structure
+### Understanding the Codebase
 
-```
-TARS_PHONE_AGENT/
-├── main_tars.py              # Entry point and orchestration
-├── config.py                 # Configuration management
-├── database.py               # SQLite database operations
-├── translations.py           # System prompts and personality
-├── sub_agents_tars.py        # Sub-agent implementations
-├── gemini_live_client.py     # Gemini Live Audio client
-├── twilio_media_streams.py   # Twilio integration
-├── session_manager.py        # Session lifecycle management
-├── message_router.py         # Inter-session message routing
-├── reminder_checker.py       # Background reminder service
-├── messaging_handler.py      # Twilio-only messaging (deprecated)
-├── task_planner.py          # Function call ordering
-├── security.py              # Authentication and permissions
-├── agent_session.py         # Session data models
-├── requirements.txt          # Python dependencies
-├── .env.example              # Configuration template
-├── TARS.md                   # TARS personality reference
-├── Máté.md                   # User information reference
-├── N8N_SETUP.md             # N8N integration guide
-└── README.md                # This file
-```
+**Start Here:**
+1. **[ARCHITECTURE.md](ARCHITECTURE.md)** - Complete file organization and agent system explained
+2. **[AGENTS_REFERENCE.md](AGENTS_REFERENCE.md)** - All 20 functions with examples
+3. **[PROGRAMMER_SETUP.md](PROGRAMMER_SETUP.md)** - Newest agent features
 
-### Core Components
+### Quick File Guide
 
-#### SessionManager
-- Manages all active Gemini Live sessions
-- Handles session creation, termination, and resumption
-- Implements permission-based access control
-- Tracks sessions by phone number, call SID, and session name
+**Core System**
+- `main_tars.py` - Entry point, orchestration
+- `config.py` - Environment variable management
+- `database.py` - SQLite operations (8 tables)
+- `security.py` - Phone number authentication
 
-#### MessageRouter
-- Routes messages between active sessions
-- Handles fallback delivery (SMS/call/email via N8N)
-- Manages message queues and delivery tracking
-- Supports broadcast and direct messaging
+**AI & Communication**
+- `gemini_live_client.py` - Gemini Live Audio integration
+- `twilio_media_streams.py` - Twilio voice call handling
+- `task_planner.py` - Function call ordering
 
-#### TaskPlanner
-- Analyzes function call dependencies
-- Orders functions for optimal execution
-- Uses topological sorting for dependency resolution
-- Categorizes functions by type (query, lookup, action, communication)
+**Agent System**
+- `sub_agents_tars.py` - ALL 9 agents (3,069 lines)
+- `github_operations.py` - Git/GitHub operations for programmer agent
+- `agent_session.py` - Session state per call
+- `session_manager.py` - Multi-session coordination
 
-#### Sub-Agents
-- **ConfigAgent** - Dynamic configuration management
-- **ReminderAgent** - Reminder CRUD operations
-- **ContactsAgent** - Contact management
-- **N8NAgent** - N8N communication delegation
-- **InterSessionAgent** - Multi-session coordination
-- **OutboundCallAgent** - Goal-based calling
+**Messaging & Background**
+- `message_router.py` - Inter-session message routing
+- `messaging_handler.py` - Twilio SMS/WhatsApp
+- `reminder_checker.py` - Background reminder polling
 
-### Adding New Features
+### Adding New Agents
 
-1. **Create SubAgent class** in `sub_agents_tars.py`:
-   ```python
-   class MyAgent(SubAgent):
-       def __init__(self):
-           super().__init__(
-               name="my_agent",
-               description="What this agent does"
-           )
-       
-       async def execute(self, args: Dict[str, Any]) -> str:
-           # Implementation
-           return "Result"
-   ```
+**Complete 6-Step Guide:** See [ARCHITECTURE.md - How to Add a New Agent](ARCHITECTURE.md#-how-to-add-a-new-agent)
 
-2. **Add function declaration** in `get_function_declarations()`:
-   ```python
-   {
-       "name": "my_function",
-       "description": "Function description",
-       "parameters": {
-           "type": "OBJECT",
-           "properties": {
-               "param": {"type": "STRING", "description": "..."}
-           },
-           "required": ["param"]
-       }
-   }
-   ```
+**Quick Summary:**
+1. Create agent class in `sub_agents_tars.py`
+2. Register in `get_all_agents()`
+3. Add function declaration in `get_function_declarations()`
+4. Map in `main_tars.py` `_register_sub_agents()`
+5. (Optional) Add to `task_planner.py` categories
+6. (Optional) Add database tables in `database.py`
 
-3. **Register agent** in `get_all_agents()`:
-   ```python
-   agents["my_agent"] = MyAgent()
-   ```
-
-4. **Map function** in `main_tars.py`:
-   ```python
-   function_map = {
-       "my_function": agents.get("my_agent"),
-       # ...
-   }
-   ```
+**Example Code:** See [ARCHITECTURE.md - Extension Patterns](ARCHITECTURE.md#-common-extension-patterns)
 
 ---
 
@@ -804,13 +830,22 @@ ENABLE_DEBUG_LOGGING=true
 
 ---
 
-## 📚 Additional Documentation
+## 📚 Full Documentation Index
 
-- [N8N Setup Guide](N8N_SETUP.md) - Detailed N8N integration instructions
-- [Environment Configuration](ENV_CONFIGURATION.md) - Complete configuration reference
-- [Config Commands](CONFIG_COMMANDS.md) - Runtime configuration commands
-- [Integration Guide](INTEGRATION_GUIDE.md) - Developer integration examples
-- [Goal Calling Guide](GOAL_CALLING_GUIDE.md) - Goal-based calling examples
+### 📖 For Users
+- **[README.md](README.md)** ← You are here
+- **[PROGRAMMER_SETUP.md](PROGRAMMER_SETUP.md)** - Terminal, files, GitHub
+- **[BUGFIXES.md](BUGFIXES.md)** - Recent fixes and solutions
+
+### 🏗️ For Developers
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** ⭐ - System organization (START HERE)
+- **[AGENTS_REFERENCE.md](AGENTS_REFERENCE.md)** ⭐ - All 20 functions explained
+- **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)** - Integration examples
+- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Implementation details
+
+### 📚 Reference
+- **[TARS.md](TARS.md)** - Personality definition
+- **[Máté.md](Máté.md)** - User information
 
 ---
 
@@ -844,8 +879,8 @@ Personal Use
 
 ---
 
-**Version**: 0.3.0  
-**Last Updated**: January 2026
+**Version**: 0.4.0 (Programmer Agent Update)  
+**Last Updated**: January 26, 2026
 
 ---
 

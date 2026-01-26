@@ -2,8 +2,8 @@
 import logging
 from typing import Optional
 from twilio.rest import Client
-from config import Config
-from database import Database
+from core.config import Config
+from core.database import Database
 
 logger = logging.getLogger(__name__)
 

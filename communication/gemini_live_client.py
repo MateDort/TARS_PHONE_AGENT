@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List, Optional, Callable, Any
 from google import genai
 from google.genai import types
-from config import Config
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ Be conversational, friendly, and helpful."""
         if permission_level == "limited":
             # Import security module for filtering
             try:
-                from security import filter_functions_by_permission, PermissionLevel
+                from core.security import filter_functions_by_permission, PermissionLevel
                 filtered_declarations = filter_functions_by_permission(
                     PermissionLevel.LIMITED,
                     self.function_declarations
@@ -506,7 +506,7 @@ Be conversational, friendly, and helpful."""
         # Plan and order function calls
         if len(function_calls) > 1:
             try:
-                from task_planner import TaskPlanner
+                from utils.task_planner import TaskPlanner
                 planner = TaskPlanner()
                 planned_calls = planner.plan_tasks(function_calls)
                 logger.info(f"Planned {len(function_calls)} function calls, reordered to {len(planned_calls)}")

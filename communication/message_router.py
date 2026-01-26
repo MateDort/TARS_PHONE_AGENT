@@ -5,8 +5,8 @@ import uuid
 from typing import Dict, List, Optional, Union
 from datetime import datetime
 
-from agent_session import AgentSession
-from config import Config
+from core.agent_session import AgentSession
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 

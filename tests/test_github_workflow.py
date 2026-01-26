@@ -11,7 +11,7 @@ async def test_workflow():
     print("="*60 + "\n")
     
     # Import after showing header
-    from github_operations import GitHubOperations
+    from utils.github_operations import GitHubOperations
     
     test_project = Path("/Users/matedort/tars_test_project")
     

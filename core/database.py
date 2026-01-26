@@ -541,6 +541,19 @@ class Database:
         self.conn.commit()
         return True
 
+    def delete_all_reminders(self) -> int:
+        """Delete all reminders.
+
+        Returns:
+            Number of reminders deleted
+        """
+        cursor = self.conn.execute("SELECT COUNT(*) FROM reminders")
+        count = cursor.fetchone()[0]
+        self.conn.execute("DELETE FROM reminders")
+        self.conn.commit()
+        logger.info(f"Deleted all {count} reminders")
+        return count
+
     def mark_reminder_triggered(self, reminder_id: int):
         """Mark reminder as triggered.
 

@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import json
 import sys
-from config import Config
+from core.config import Config
 
 async def send_message(message: str):
     """Send a message to N8N webhook."""

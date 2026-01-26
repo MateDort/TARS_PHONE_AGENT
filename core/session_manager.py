@@ -4,15 +4,15 @@ import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from agent_session import (
+from core.agent_session import (
     AgentSession,
     SessionStatus,
     SessionType,
     PermissionLevel,
     generate_session_id
 )
-from security import authenticate_phone_number, filter_functions_by_permission, get_limited_system_instruction
-from config import Config
+from core.security import authenticate_phone_number, filter_functions_by_permission, get_limited_system_instruction
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -553,7 +553,7 @@ class SessionManager:
         Returns:
             Configured GeminiLiveClient instance
         """
-        from gemini_live_client import GeminiLiveClient
+        from communication.gemini_live_client import GeminiLiveClient
         from sub_agents_tars import get_function_declarations
 
         # Get all function declarations
@@ -566,7 +566,7 @@ class SessionManager:
         )
 
         # Get system instruction
-        from translations import format_text
+        from utils.translations import format_text
         from datetime import datetime
 
         current_time = datetime.now().strftime("%I:%M %p")

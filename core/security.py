@@ -1,8 +1,8 @@
 """Security module for agent session authentication and permission filtering."""
-from agent_session import PermissionLevel
+from core.agent_session import PermissionLevel
 import logging
-from typing import List, Dict
-from config import Config
+from typing import List, Dict, Optional
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,32 @@ def validate_session_permission(
         return session_permission == PermissionLevel.FULL
 
     return False
+
+
+def verify_confirmation_code(provided_code: str) -> bool:
+    """Verify if the provided confirmation code matches the configured code.
+    
+    Args:
+        provided_code: The code provided by the user
+        
+    Returns:
+        True if code matches, False otherwise
+    """
+    if not provided_code:
+        return False
+    
+    # Normalize both codes (strip whitespace, convert to string)
+    provided = str(provided_code).strip()
+    expected = str(Config.CONFIRMATION_CODE).strip()
+    
+    is_valid = provided == expected
+    
+    if is_valid:
+        logger.info(f"✅ Confirmation code verified successfully")
+    else:
+        logger.warning(f"❌ Invalid confirmation code provided (expected: {expected[:2]}...)")
+    
+    return is_valid
 
 
 def get_session_capabilities(permission: PermissionLevel) -> List[str]:
