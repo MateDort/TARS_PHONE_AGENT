@@ -844,7 +844,7 @@ Personal Use
 
 ---
 
-**Version**: 2.0  
+**Version**: 0.3.0  
 **Last Updated**: January 2026
 
 ---
