@@ -190,6 +190,11 @@ class TARSPhoneAgent:
             "get_session_info": agents.get("inter_session"),
             "suspend_session": agents.get("inter_session"),
             "resume_session": agents.get("inter_session"),
+            # Programmer agent functions
+            "manage_project": agents.get("programmer"),
+            "execute_terminal": agents.get("programmer"),
+            "edit_code": agents.get("programmer"),
+            "github_operation": agents.get("programmer"),
         }
 
         for declaration in declarations:

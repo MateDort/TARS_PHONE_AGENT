@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
+from pathlib import Path
 from gemini_live_client import SubAgent
 from database import Database
 from translations import get_text, format_text
@@ -1818,6 +1819,652 @@ class KIPPAgent(SubAgent):
             return f"An unexpected error occurred while sending to KIPP, sir: {str(e)}"
 
 
+class ProgrammerAgent(SubAgent):
+    """Handles programming tasks: file operations, terminal commands, code editing, and GitHub operations."""
+
+    def __init__(self, db: Database):
+        super().__init__(
+            name="programmer",
+            description="Manages programming projects, executes terminal commands, edits code, and handles GitHub operations"
+        )
+        self.db = db
+        from github_operations import GitHubOperations
+        self.github = GitHubOperations()
+        
+        # Safe commands that don't need confirmation
+        self.safe_commands = {
+            'ls', 'pwd', 'cd', 'cat', 'echo', 'git status', 'git log', 
+            'git diff', 'git branch', 'npm install', 'pip install', 
+            'pip list', 'npm list', 'node --version', 'python --version',
+            'python3 --version', 'which', 'whereis'
+        }
+        
+        # Destructive commands that require confirmation
+        self.destructive_patterns = [
+            'rm ', 'rmdir', 'git push', 'git push --force', 'git reset --hard',
+            'dd ', 'mkfs', 'sudo', 'chmod', 'chown'
+        ]
+        # Note: Removed '>' and '>>' to allow file redirection for normal operations
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute programmer operation.
+
+        Args:
+            args: Operation arguments with 'action' field
+        """
+        action = args.get('action', '')
+        
+        # Route based on action type first, then parameters
+        # Check file operations first (most specific)
+        if 'file_path' in args and action in ['read', 'edit', 'create', 'delete']:
+            return await self.edit_code(args)
+        # Check GitHub operations
+        elif action in ['clone', 'push', 'pull', 'create_repo', 'list_repos', 'init'] or 'repo_url' in args:
+            return await self.github_operation(args)
+        # Check project management
+        elif action in ['list', 'create', 'open', 'info'] or ('project_name' in args and 'file_path' not in args):
+            return await self.manage_project(args)
+        # Check terminal commands
+        elif 'command' in args:
+            return await self.execute_terminal(args)
+        else:
+            return "Invalid programmer operation, sir."
+
+    async def manage_project(self, args: Dict[str, Any]) -> str:
+        """Manage programming projects.
+
+        Args:
+            args: {
+                "action": "list|create|open|info",
+                "project_name": str,
+                "project_type": str (optional),
+                "path": str (optional)
+            }
+        """
+        action = args.get('action', 'list')
+        
+        if action == 'list':
+            return await self._list_projects(args.get('path', Config.PROJECTS_ROOT))
+        elif action == 'create':
+            return await self._create_project(args)
+        elif action == 'open':
+            return await self._open_project(args.get('project_name'))
+        elif action == 'info':
+            return await self._get_project_info(args.get('project_name'))
+        else:
+            return f"Unknown project action: {action}, sir."
+
+    async def _list_projects(self, base_path: str) -> str:
+        """List all projects in a directory."""
+        try:
+            import os
+            from pathlib import Path
+            
+            base = Path(base_path).expanduser()
+            if not base.exists():
+                return f"Directory {base_path} does not exist, sir."
+            
+            # Find directories that look like projects
+            projects = []
+            for item in base.iterdir():
+                if item.is_dir() and not item.name.startswith('.'):
+                    # Check for common project indicators
+                    is_project = any([
+                        (item / '.git').exists(),
+                        (item / 'package.json').exists(),
+                        (item / 'requirements.txt').exists(),
+                        (item / 'setup.py').exists(),
+                        (item / 'Cargo.toml').exists(),
+                        (item / 'go.mod').exists()
+                    ])
+                    
+                    if is_project:
+                        project_type = self._detect_project_type(item)
+                        git_status = 'initialized' if (item / '.git').exists() else 'none'
+                        projects.append({
+                            'name': item.name,
+                            'path': str(item),
+                            'type': project_type,
+                            'git': git_status
+                        })
+                        # Cache this project
+                        self.db.cache_project(item.name, str(item), project_type, git_status)
+            
+            if not projects:
+                return f"No projects found in {base_path}, sir."
+            
+            result = f"Found {len(projects)} project(s) in {base_path}:\n"
+            for p in projects:
+                result += f"\n- {p['name']}: {p['type']} (Git: {p['git']})"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error listing projects: {e}")
+            return f"Error listing projects: {str(e)}, sir."
+
+    def _detect_project_type(self, project_path: Path) -> str:
+        """Detect project type from files."""
+        if (project_path / 'package.json').exists():
+            package_json = project_path / 'package.json'
+            try:
+                import json
+                with open(package_json) as f:
+                    data = json.load(f)
+                    if 'react' in str(data.get('dependencies', {})):
+                        return 'react'
+                    elif 'next' in str(data.get('dependencies', {})):
+                        return 'next'
+                    else:
+                        return 'node'
+            except:
+                return 'node'
+        elif (project_path / 'requirements.txt').exists() or (project_path / 'setup.py').exists():
+            return 'python'
+        elif (project_path / 'Cargo.toml').exists():
+            return 'rust'
+        elif (project_path / 'go.mod').exists():
+            return 'go'
+        else:
+            return 'unknown'
+
+    async def _create_project(self, args: Dict[str, Any]) -> str:
+        """Create a new project."""
+        try:
+            import os
+            from pathlib import Path
+            
+            project_name = args.get('project_name')
+            project_type = args.get('project_type', 'python')
+            base_path = args.get('path', Config.PROJECTS_ROOT)
+            
+            if not project_name:
+                return "Please provide a project name, sir."
+            
+            project_path = Path(base_path).expanduser() / project_name
+            
+            if project_path.exists():
+                return f"Project {project_name} already exists at {project_path}, sir."
+            
+            # Create project directory
+            project_path.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize based on project type
+            if project_type == 'python':
+                # Create basic Python project structure
+                (project_path / 'main.py').write_text('#!/usr/bin/env python3\n"""Main module."""\n\nif __name__ == "__main__":\n    print("Hello, World!")\n')
+                (project_path / 'requirements.txt').write_text('# Python dependencies\n')
+                (project_path / 'README.md').write_text(f'# {project_name}\n\nA Python project.\n')
+            elif project_type in ['node', 'react', 'next']:
+                # Create package.json
+                import json
+                package_data = {
+                    'name': project_name,
+                    'version': '1.0.0',
+                    'description': f'A {project_type} project',
+                    'main': 'index.js',
+                    'scripts': {'start': 'node index.js'},
+                    'author': '',
+                    'license': 'ISC'
+                }
+                (project_path / 'package.json').write_text(json.dumps(package_data, indent=2))
+                (project_path / 'index.js').write_text('console.log("Hello, World!");\n')
+                (project_path / 'README.md').write_text(f'# {project_name}\n\nA {project_type} project.\n')
+            else:
+                # Generic project
+                (project_path / 'README.md').write_text(f'# {project_name}\n\nA new project.\n')
+            
+            # Cache the project
+            self.db.cache_project(project_name, str(project_path), project_type, 'none')
+            
+            logger.info(f"Created project: {project_name} at {project_path}")
+            return f"Created {project_type} project '{project_name}' at {project_path}, sir."
+            
+        except Exception as e:
+            logger.error(f"Error creating project: {e}")
+            return f"Error creating project: {str(e)}, sir."
+
+    async def _open_project(self, project_name: str) -> str:
+        """Open a project and return its structure."""
+        try:
+            from pathlib import Path
+            
+            if not project_name:
+                return "Please provide a project name, sir."
+            
+            # Check cache first
+            cached = self.db.get_cached_project(project_name)
+            if cached:
+                project_path = Path(cached['project_path'])
+            else:
+                # Try to find it
+                project_path = Path(Config.PROJECTS_ROOT).expanduser() / project_name
+            
+            if not project_path.exists():
+                return f"Project {project_name} not found, sir."
+            
+            # Get project structure
+            structure = self._get_directory_structure(project_path, max_depth=2)
+            
+            # Update cache
+            project_type = self._detect_project_type(project_path)
+            git_status = 'initialized' if (project_path / '.git').exists() else 'none'
+            self.db.cache_project(project_name, str(project_path), project_type, git_status)
+            
+            return f"Opened project '{project_name}':\nPath: {project_path}\nType: {project_type}\n\nStructure:\n{structure}"
+            
+        except Exception as e:
+            logger.error(f"Error opening project: {e}")
+            return f"Error opening project: {str(e)}, sir."
+
+    def _get_directory_structure(self, path: Path, prefix: str = "", max_depth: int = 3, current_depth: int = 0) -> str:
+        """Get a tree structure of a directory."""
+        if current_depth >= max_depth:
+            return ""
+        
+        try:
+            items = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name))
+            structure = ""
+            
+            for i, item in enumerate(items):
+                # Skip hidden files and common exclusions
+                if item.name.startswith('.') or item.name in ['node_modules', '__pycache__', 'venv', 'env']:
+                    continue
+                
+                is_last = i == len(items) - 1
+                connector = "└── " if is_last else "├── "
+                
+                if item.is_dir():
+                    structure += f"{prefix}{connector}{item.name}/\n"
+                    extension = "    " if is_last else "│   "
+                    structure += self._get_directory_structure(item, prefix + extension, max_depth, current_depth + 1)
+                else:
+                    structure += f"{prefix}{connector}{item.name}\n"
+            
+            return structure
+        except PermissionError:
+            return f"{prefix}[Permission Denied]\n"
+
+    async def _get_project_info(self, project_name: str) -> str:
+        """Get detailed information about a project."""
+        try:
+            from pathlib import Path
+            
+            cached = self.db.get_cached_project(project_name)
+            if not cached:
+                return f"Project {project_name} not found in cache. Try listing projects first, sir."
+            
+            project_path = Path(cached['project_path'])
+            
+            if not project_path.exists():
+                return f"Project path {project_path} no longer exists, sir."
+            
+            info = f"Project: {project_name}\n"
+            info += f"Path: {project_path}\n"
+            info += f"Type: {cached.get('project_type', 'unknown')}\n"
+            info += f"Git Status: {cached.get('git_status', 'none')}\n"
+            info += f"Last Accessed: {cached.get('last_accessed', 'never')}\n"
+            
+            # Check for git repo
+            if (project_path / '.git').exists():
+                branch = await self.github.get_current_branch(str(project_path))
+                if branch:
+                    info += f"Git Branch: {branch}\n"
+                
+                git_status_result = await self.github.git_status(str(project_path))
+                if git_status_result.get('success'):
+                    if git_status_result.get('clean'):
+                        info += "Working tree: clean\n"
+                    else:
+                        info += "Working tree: has changes\n"
+            
+            return info
+            
+        except Exception as e:
+            logger.error(f"Error getting project info: {e}")
+            return f"Error getting project info: {str(e)}, sir."
+
+    async def execute_terminal(self, args: Dict[str, Any]) -> str:
+        """Execute terminal command with safety checks.
+
+        Args:
+            args: {
+                "command": str,
+                "working_directory": str (optional),
+                "timeout": int (optional)
+            }
+        """
+        try:
+            import subprocess
+            from pathlib import Path
+            
+            command = args.get('command', '').strip()
+            working_dir = args.get('working_directory', Config.PROJECTS_ROOT)
+            timeout = args.get('timeout', Config.MAX_COMMAND_TIMEOUT)
+            
+            if not command:
+                return "Please provide a command to execute, sir."
+            
+            # Check if command is safe
+            needs_confirmation = self._is_destructive_command(command)
+            
+            if needs_confirmation:
+                return f"This command requires confirmation: {command}\nPlease confirm to proceed, sir."
+            
+            # Log operation
+            session_id = args.get('session_id', 'unknown')
+            op_id = self.db.log_programming_operation(
+                session_id=session_id,
+                operation_type='terminal',
+                command=command,
+                working_directory=working_dir,
+                status='pending'
+            )
+            
+            # Execute command
+            try:
+                # Expand working directory
+                work_path = Path(working_dir).expanduser()
+                if not work_path.exists():
+                    self.db.update_programming_operation(op_id, 'failed', error=f"Directory {working_dir} does not exist")
+                    return f"Directory {working_dir} does not exist, sir."
+                
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=str(work_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
+                
+                output = result.stdout if result.stdout else result.stderr
+                
+                if result.returncode == 0:
+                    self.db.update_programming_operation(op_id, 'executed', output=output)
+                    logger.info(f"Executed command: {command}")
+                    return f"Command executed successfully:\n\n{output}" if output else "Command executed successfully, sir."
+                else:
+                    self.db.update_programming_operation(op_id, 'failed', output=output, error=result.stderr)
+                    return f"Command failed with exit code {result.returncode}:\n\n{result.stderr or output}"
+                    
+            except subprocess.TimeoutExpired:
+                self.db.update_programming_operation(op_id, 'failed', error='Command timed out')
+                return f"Command timed out after {timeout} seconds, sir."
+                
+        except Exception as e:
+            logger.error(f"Error executing terminal command: {e}")
+            return f"Error executing command: {str(e)}, sir."
+
+    def _is_destructive_command(self, command: str) -> bool:
+        """Check if a command is potentially destructive."""
+        command_lower = command.lower()
+        
+        # Check for destructive patterns
+        for pattern in self.destructive_patterns:
+            if pattern in command_lower:
+                return True
+        
+        return False
+
+    async def edit_code(self, args: Dict[str, Any]) -> str:
+        """Edit code files with AI assistance.
+
+        Args:
+            args: {
+                "action": "read|edit|create|delete",
+                "file_path": str,
+                "changes_description": str,
+                "content": str (for create action)
+            }
+        """
+        action = args.get('action', 'read')
+        file_path = args.get('file_path', '')
+        
+        if not file_path:
+            return "Please provide a file path, sir."
+        
+        if action == 'read':
+            return await self._read_file(file_path)
+        elif action == 'create':
+            return await self._create_file(file_path, args.get('content', ''))
+        elif action == 'edit':
+            return await self._edit_file(file_path, args.get('changes_description', ''))
+        elif action == 'delete':
+            return await self._delete_file(file_path)
+        else:
+            return f"Unknown file action: {action}, sir."
+
+    async def _read_file(self, file_path: str) -> str:
+        """Read a file."""
+        try:
+            from pathlib import Path
+            
+            path = Path(file_path).expanduser()
+            if not path.exists():
+                return f"File {file_path} does not exist, sir."
+            
+            if path.stat().st_size > 100000:  # 100KB limit
+                return f"File {file_path} is too large to read (>100KB), sir."
+            
+            content = path.read_text()
+            return f"File: {file_path}\n\n{content}"
+            
+        except Exception as e:
+            logger.error(f"Error reading file: {e}")
+            return f"Error reading file: {str(e)}, sir."
+
+    async def _create_file(self, file_path: str, content: str) -> str:
+        """Create a new file."""
+        try:
+            from pathlib import Path
+            
+            path = Path(file_path).expanduser()
+            
+            if path.exists():
+                return f"File {file_path} already exists. Use edit action to modify it, sir."
+            
+            # Create parent directories if needed
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write content
+            path.write_text(content)
+            
+            logger.info(f"Created file: {file_path}")
+            return f"Created file {file_path}, sir."
+            
+        except Exception as e:
+            logger.error(f"Error creating file: {e}")
+            return f"Error creating file: {str(e)}, sir."
+
+    async def _edit_file(self, file_path: str, changes_description: str) -> str:
+        """Edit a file using AI."""
+        try:
+            from pathlib import Path
+            import difflib
+            
+            path = Path(file_path).expanduser()
+            
+            if not path.exists():
+                return f"File {file_path} does not exist, sir."
+            
+            # Read current content
+            original_content = path.read_text()
+            
+            # Backup file if enabled
+            if Config.ENABLE_CODE_BACKUPS:
+                backup_dir = path.parent / '.tars_backups'
+                backup_dir.mkdir(exist_ok=True)
+                from datetime import datetime
+                backup_name = f"{path.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                (backup_dir / backup_name).write_text(original_content)
+            
+            # Use Gemini to generate changes
+            from google import genai
+            client = genai.Client(
+                http_options={"api_version": "v1beta"},
+                api_key=Config.GEMINI_API_KEY
+            )
+            
+            prompt = f"""Analyze this code and apply these changes: {changes_description}
+
+Current code in {path.name}:
+```
+{original_content}
+```
+
+Respond with ONLY the complete modified file content, no explanations."""
+            
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp",
+                contents=prompt
+            )
+            
+            modified_content = response.text.strip()
+            
+            # Remove markdown code blocks if present
+            if modified_content.startswith('```'):
+                lines = modified_content.split('\n')
+                modified_content = '\n'.join(lines[1:-1]) if len(lines) > 2 else modified_content
+            
+            # Generate diff
+            diff = difflib.unified_diff(
+                original_content.splitlines(keepends=True),
+                modified_content.splitlines(keepends=True),
+                fromfile=f'{path.name} (original)',
+                tofile=f'{path.name} (modified)',
+                lineterm=''
+            )
+            diff_text = ''.join(diff)
+            
+            # Write modified content
+            path.write_text(modified_content)
+            
+            logger.info(f"Edited file: {file_path}")
+            return f"Edited file {file_path}. Changes:\n\n{diff_text[:1000]}"  # Limit diff output
+            
+        except Exception as e:
+            logger.error(f"Error editing file: {e}")
+            return f"Error editing file: {str(e)}, sir."
+
+    async def _delete_file(self, file_path: str) -> str:
+        """Delete a file (requires confirmation)."""
+        return f"Deleting {file_path} requires confirmation. Please confirm to proceed, sir."
+
+    async def github_operation(self, args: Dict[str, Any]) -> str:
+        """Handle GitHub operations.
+
+        Args:
+            args: {
+                "action": "clone|push|pull|create_repo|list_repos|init",
+                "repo_name": str,
+                "repo_url": str,
+                "commit_message": str,
+                "branch": str
+            }
+        """
+        action = args.get('action', '')
+        
+        if action == 'init':
+            return await self._git_init(args.get('working_directory', '.'))
+        elif action == 'list_repos':
+            return await self._list_repos()
+        elif action == 'create_repo':
+            return await self._create_repo(args)
+        elif action == 'clone':
+            return await self._clone_repo(args)
+        elif action == 'push':
+            return await self._git_push(args)
+        elif action == 'pull':
+            return await self._git_pull(args)
+        else:
+            return f"Unknown GitHub action: {action}, sir."
+
+    async def _git_init(self, directory: str) -> str:
+        """Initialize git repository."""
+        result = await self.github.git_init(directory)
+        if result.get('success'):
+            return f"Initialized git repository in {directory}, sir."
+        return f"Failed to initialize git: {result.get('error')}, sir."
+
+    async def _list_repos(self) -> str:
+        """List GitHub repositories."""
+        if not self.github.is_authenticated():
+            return "GitHub authentication not configured. Please set GITHUB_TOKEN in .env, sir."
+        
+        repos = await self.github.list_repositories()
+        if not repos:
+            return "No repositories found or error accessing GitHub, sir."
+        
+        result = f"Found {len(repos)} repositories:\n"
+        for repo in repos[:10]:  # Limit to 10
+            result += f"\n- {repo['name']}: {repo['url']}"
+        
+        return result
+
+    async def _create_repo(self, args: Dict[str, Any]) -> str:
+        """Create GitHub repository."""
+        repo_name = args.get('repo_name', '')
+        description = args.get('description', '')
+        private = args.get('private', False)
+        
+        if not repo_name:
+            return "Please provide a repository name, sir."
+        
+        if not self.github.is_authenticated():
+            return "GitHub authentication not configured. Please set GITHUB_TOKEN in .env file, sir."
+        
+        result = await self.github.create_repository(repo_name, description, private)
+        if result.get('success'):
+            return f"Created GitHub repository '{repo_name}' at {result.get('url')}, sir."
+        return f"Failed to create repository: {result.get('error')}, sir."
+
+    async def _clone_repo(self, args: Dict[str, Any]) -> str:
+        """Clone a repository."""
+        repo_url = args.get('repo_url', '')
+        target_dir = args.get('target_dir', '')
+        
+        if not repo_url:
+            return "Please provide a repository URL, sir."
+        
+        if not target_dir:
+            # Extract repo name from URL
+            repo_name = repo_url.rstrip('/').split('/')[-1].replace('.git', '')
+            target_dir = str(Path(Config.PROJECTS_ROOT).expanduser() / repo_name)
+        
+        result = await self.github.clone_repository(repo_url, target_dir)
+        if result.get('success'):
+            return f"Cloned repository to {target_dir}, sir."
+        return f"Failed to clone repository: {result.get('error')}, sir."
+
+    async def _git_push(self, args: Dict[str, Any]) -> str:
+        """Push to GitHub."""
+        working_dir = args.get('working_directory', '.')
+        branch = args.get('branch', 'main')
+        commit_message = args.get('commit_message', 'Update files')
+        
+        # First, add and commit changes
+        commit_result = await self.github.git_add_commit(working_dir, commit_message)
+        if not commit_result.get('success'):
+            return f"Failed to commit: {commit_result.get('error')}, sir."
+        
+        # Then push
+        push_result = await self.github.git_push(working_dir, branch)
+        if push_result.get('success'):
+            return f"Pushed to {branch}: {push_result.get('message')}, sir."
+        return f"Failed to push: {push_result.get('error')}, sir."
+
+    async def _git_pull(self, args: Dict[str, Any]) -> str:
+        """Pull from GitHub."""
+        working_dir = args.get('working_directory', '.')
+        branch = args.get('branch', 'main')
+        
+        result = await self.github.git_pull(working_dir, branch)
+        if result.get('success'):
+            return f"Pulled from {branch}: {result.get('message')}, sir."
+        return f"Failed to pull: {result.get('error')}, sir."
+
+
 # Agent registry
 
 
@@ -1853,6 +2500,9 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
 
     # Add KIPP agent for all communication tasks
     agents["kipp"] = KIPPAgent()
+
+    # Add programmer agent
+    agents["programmer"] = ProgrammerAgent(db)
 
     return agents
 
@@ -2305,6 +2955,114 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["message"]
+            }
+        },
+        {
+            "name": "manage_project",
+            "description": "Manage coding projects in /Users/matedort/: list all projects, create new project, open existing project, or get project info. Use this to navigate and manage Máté's programming projects.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action to perform: 'list' (show all projects), 'create' (new project), 'open' (open existing project), 'info' (get project details)"
+                    },
+                    "project_name": {
+                        "type": "STRING",
+                        "description": "Name of the project (required for create, open, info actions)"
+                    },
+                    "project_type": {
+                        "type": "STRING",
+                        "description": "Type of project for create action: 'python', 'node', 'react', 'next', or 'vanilla-js'"
+                    },
+                    "path": {
+                        "type": "STRING",
+                        "description": "Optional: custom path to search for projects (default: /Users/matedort/)"
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        {
+            "name": "execute_terminal",
+            "description": "Execute terminal commands in a project directory. Safe commands (ls, pwd, git status, npm install, pip install) execute immediately. Destructive commands (rm, git push, sudo) require confirmation. Commands timeout after 60 seconds by default.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "command": {
+                        "type": "STRING",
+                        "description": "Shell command to execute (e.g., 'npm install', 'python main.py', 'git status')"
+                    },
+                    "working_directory": {
+                        "type": "STRING",
+                        "description": "Directory to run command in (default: /Users/matedort/)"
+                    },
+                    "timeout": {
+                        "type": "INTEGER",
+                        "description": "Maximum seconds to wait for command (default: 60, max: 600)"
+                    }
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "edit_code",
+            "description": "Read, create, edit, or delete code files using AI. For edit action, describe the changes you want (e.g., 'change background color to blue', 'fix the bug in login function', 'add error handling'). AI will analyze the code, generate changes, and show a diff before applying.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'read' (view file), 'create' (new file), 'edit' (modify with AI), 'delete' (remove file)"
+                    },
+                    "file_path": {
+                        "type": "STRING",
+                        "description": "Full path to the file (e.g., '/Users/matedort/simple-portfolio/style.css')"
+                    },
+                    "changes_description": {
+                        "type": "STRING",
+                        "description": "For edit action: describe what to change (e.g., 'change background to blue', 'add login validation')"
+                    },
+                    "content": {
+                        "type": "STRING",
+                        "description": "For create action: the file content to write"
+                    }
+                },
+                "required": ["action", "file_path"]
+            }
+        },
+        {
+            "name": "github_operation",
+            "description": "GitHub operations: initialize git repo, clone repository, push changes (requires confirmation), pull changes, create new repository (requires confirmation), list repositories. Handles git workflow including commits.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: 'init' (git init), 'clone' (clone repo), 'push' (push changes with commit), 'pull' (pull changes), 'create_repo' (new GitHub repo), 'list_repos' (show repositories)"
+                    },
+                    "repo_name": {
+                        "type": "STRING",
+                        "description": "Repository name (for create_repo action)"
+                    },
+                    "repo_url": {
+                        "type": "STRING",
+                        "description": "Repository URL for clone action (e.g., 'https://github.com/user/repo.git')"
+                    },
+                    "commit_message": {
+                        "type": "STRING",
+                        "description": "Commit message for push action (e.g., 'Update background color')"
+                    },
+                    "branch": {
+                        "type": "STRING",
+                        "description": "Branch name (default: 'main')"
+                    },
+                    "working_directory": {
+                        "type": "STRING",
+                        "description": "Directory for git operations (default: current project)"
+                    }
+                },
+                "required": ["action"]
             }
         }
     ]

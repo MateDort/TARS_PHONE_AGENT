@@ -242,6 +242,46 @@ class Database:
                 )
             """)
 
+            # Create programming_operations table (for programmer agent)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS programming_operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    operation_type TEXT NOT NULL,
+                    command TEXT,
+                    working_directory TEXT,
+                    status TEXT NOT NULL,
+                    output TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    executed_at TEXT,
+                    FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+                )
+            """)
+
+            # Create project_cache table (for tracking projects)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS project_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_name TEXT UNIQUE NOT NULL,
+                    project_path TEXT NOT NULL,
+                    project_type TEXT,
+                    git_status TEXT,
+                    last_accessed TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create indexes for programming operations
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prog_ops_session
+                ON programming_operations(session_id)
+            """)
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prog_ops_status
+                ON programming_operations(status)
+            """)
+
             self.conn.commit()
 
             # Run migrations
@@ -1761,6 +1801,156 @@ class Database:
         self.conn.execute(
             "UPDATE conversations SET embedding = ? WHERE id = ?",
             (embedding, message_id)
+        )
+        self.conn.commit()
+
+    # Programmer Agent Database Methods
+
+    def log_programming_operation(
+        self,
+        session_id: str,
+        operation_type: str,
+        command: str,
+        working_directory: str,
+        status: str = 'pending'
+    ) -> int:
+        """Log a programming operation.
+
+        Args:
+            session_id: Session ID
+            operation_type: Type of operation (terminal, file_edit, github)
+            command: Command or operation description
+            working_directory: Working directory
+            status: Operation status
+
+        Returns:
+            Operation ID
+        """
+        cursor = self.conn.execute(
+            """INSERT INTO programming_operations 
+               (session_id, operation_type, command, working_directory, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (session_id, operation_type, command, working_directory, status, datetime.now().isoformat())
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def update_programming_operation(
+        self,
+        operation_id: int,
+        status: str,
+        output: str = None,
+        error: str = None
+    ):
+        """Update a programming operation.
+
+        Args:
+            operation_id: Operation ID
+            status: New status
+            output: Operation output
+            error: Error message if any
+        """
+        executed_at = datetime.now().isoformat() if status in ['executed', 'completed', 'failed'] else None
+        self.conn.execute(
+            """UPDATE programming_operations 
+               SET status = ?, output = ?, error = ?, executed_at = ?
+               WHERE id = ?""",
+            (status, output, error, executed_at, operation_id)
+        )
+        self.conn.commit()
+
+    def get_programming_operations(
+        self,
+        session_id: str = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        """Get programming operations.
+
+        Args:
+            session_id: Filter by session ID (optional)
+            limit: Maximum number of operations to return
+
+        Returns:
+            List of operation dictionaries
+        """
+        if session_id:
+            cursor = self.conn.execute(
+                """SELECT * FROM programming_operations 
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (session_id, limit)
+            )
+        else:
+            cursor = self.conn.execute(
+                """SELECT * FROM programming_operations 
+                   ORDER BY created_at DESC LIMIT ?""",
+                (limit,)
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def cache_project(
+        self,
+        project_name: str,
+        project_path: str,
+        project_type: str = None,
+        git_status: str = 'none'
+    ):
+        """Cache project information.
+
+        Args:
+            project_name: Project name
+            project_path: Full path to project
+            project_type: Type of project (python, node, react, etc.)
+            git_status: Git status (initialized, clean, modified, none)
+        """
+        try:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO project_cache 
+                   (project_name, project_path, project_type, git_status, last_accessed)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (project_name, project_path, project_type, git_status, datetime.now().isoformat())
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Error caching project: {e}")
+
+    def get_cached_project(self, project_name: str) -> Optional[Dict]:
+        """Get cached project information.
+
+        Args:
+            project_name: Project name
+
+        Returns:
+            Project dictionary or None
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM project_cache WHERE project_name = ?",
+            (project_name,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_all_cached_projects(self) -> List[Dict]:
+        """Get all cached projects.
+
+        Returns:
+            List of project dictionaries
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM project_cache ORDER BY last_accessed DESC"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_project_git_status(self, project_name: str, git_status: str):
+        """Update project git status.
+
+        Args:
+            project_name: Project name
+            git_status: New git status
+        """
+        self.conn.execute(
+            "UPDATE project_cache SET git_status = ?, last_accessed = ? WHERE project_name = ?",
+            (git_status, datetime.now().isoformat(), project_name)
         )
         self.conn.commit()
 

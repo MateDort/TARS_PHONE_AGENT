@@ -125,6 +125,15 @@ class Config:
     # Message Session Configuration
     MESSAGE_SESSION_TIMEOUT = int(os.getenv('MESSAGE_SESSION_TIMEOUT', '120'))  # Timeout in seconds (default: 2 minutes)
 
+    # GitHub Integration
+    GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')
+    GITHUB_USERNAME = os.getenv('GITHUB_USERNAME', '')
+
+    # Programmer Agent Settings
+    PROJECTS_ROOT = os.getenv('PROJECTS_ROOT', '/Users/matedort/')
+    MAX_COMMAND_TIMEOUT = int(os.getenv('MAX_COMMAND_TIMEOUT', '60'))
+    ENABLE_CODE_BACKUPS = os.getenv('ENABLE_CODE_BACKUPS', 'true').lower() == 'true'
+
     @classmethod
     def validate(cls):
         """Validate that required configuration is present."""
@@ -195,5 +204,10 @@ class Config:
         cls.CONVERSATION_SEARCH_ENABLED = os.getenv('CONVERSATION_SEARCH_ENABLED', 'true').lower() == 'true'
         cls.MESSAGE_SESSION_TIMEOUT = int(os.getenv('MESSAGE_SESSION_TIMEOUT', '120'))
         cls.IMPORTANT_EMAIL_NOTIFICATION = os.getenv('IMPORTANT_EMAIL_NOTIFICATION', 'call').lower()
+        cls.GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')
+        cls.GITHUB_USERNAME = os.getenv('GITHUB_USERNAME', '')
+        cls.PROJECTS_ROOT = os.getenv('PROJECTS_ROOT', '/Users/matedort/')
+        cls.MAX_COMMAND_TIMEOUT = int(os.getenv('MAX_COMMAND_TIMEOUT', '60'))
+        cls.ENABLE_CODE_BACKUPS = os.getenv('ENABLE_CODE_BACKUPS', 'true').lower() == 'true'
 
         return True

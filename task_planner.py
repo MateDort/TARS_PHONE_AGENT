@@ -18,6 +18,7 @@ class TaskPlanner:
             "action": ["make_goal_call", "adjust_config", "manage_reminder"],
             "communication": ["send_to_n8n", "send_message_to_session"],
             "notification": ["send_notification", "request_user_confirmation"],
+            "programming": ["manage_project", "execute_terminal", "edit_code", "github_operation"],
         }
         
         # Define execution order priority (lower number = higher priority)
@@ -27,6 +28,7 @@ class TaskPlanner:
             "action": 3,
             "notification": 4,
             "communication": 5,
+            "programming": 6,
         }
         
         # Define explicit dependencies (function_name -> list of required functions)
