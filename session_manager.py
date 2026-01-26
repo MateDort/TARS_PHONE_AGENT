@@ -256,9 +256,9 @@ class SessionManager:
                                 full_response = ''.join(response_buffer)
                                 response_buffer.clear()
                                 
-                                # Determine medium based on identifier - route through N8N
-                                from sub_agents_tars import N8NAgent
-                                n8n_agent = N8NAgent()
+                                # Determine medium based on identifier - route through KIPP
+                                from sub_agents_tars import KIPPAgent
+                                n8n_agent = KIPPAgent()
                                 if email_address:
                                     n8n_message = f"Send email to {email_address} with subject 'TARS Reply' and body '{full_response}'"
                                 elif phone_number:
@@ -328,10 +328,10 @@ class SessionManager:
             return session
 
     async def create_n8n_session(self, task_message: str) -> AgentSession:
-        """Create a live session for N8N tasks named 'Mate_n8n' with 1-minute timeout.
-        
+        """Create a live session for KIPP tasks named 'Mate_n8n' with 1-minute timeout.
+
         Args:
-            task_message: Task message from N8N (e.g., "call helen")
+            task_message: Task message from KIPP (e.g., "call helen")
             
         Returns:
             Created AgentSession instance
@@ -352,7 +352,7 @@ class SessionManager:
             session_id = generate_session_id()
             session_name = "Mate_n8n"
             
-            # Create GeminiLiveClient with full permissions (N8N tasks need full access)
+            # Create GeminiLiveClient with full permissions (KIPP tasks need full access)
             gemini_client = await self._create_gemini_client(PermissionLevel.FULL)
             
             # Create session object first (needed for handlers)
@@ -366,18 +366,18 @@ class SessionManager:
                 gemini_client=gemini_client,
                 websocket=None,
                 stream_sid=f"stream_{session_id}",
-                purpose=f"N8N task: {task_message}",
+                purpose=f"KIPP task: {task_message}",
                 parent_session_id=None
             )
             
-            # Mark as N8N session and activate
+            # Mark as KIPP session and activate
             session.platform = 'n8n'
             session.last_activity_at = datetime.now()
             session.activate()
             
             # Set up response handlers - update activity on any interaction
             async def handle_text_response(text: str):
-                """Handle text response from Gemini (for N8N tasks, just log and update activity)."""
+                """Handle text response from Gemini (for KIPP tasks, just log and update activity)."""
                 logger.info(f"Mate_n8n session response: {text[:100]}")
                 session.update_activity()
             
@@ -417,17 +417,17 @@ class SessionManager:
             # Send initial task message
             await gemini_client.send_text(task_message, end_of_turn=True)
             
-            logger.info(f"Created N8N session {session_id[:8]}: {session_name} with task: {task_message[:50]}")
+            logger.info(f"Created KIPP session {session_id[:8]}: {session_name} with task: {task_message[:50]}")
             
             return session
 
     async def _monitor_n8n_session_timeout(self, session: AgentSession):
-        """Monitor N8N session for 1-minute inactivity timeout.
+        """Monitor KIPP session for 1-minute inactivity timeout.
         
         Args:
             session: AgentSession to monitor
         """
-        timeout_seconds = 60  # 1 minute for N8N sessions
+        timeout_seconds = 60  # 1 minute for KIPP sessions
         
         while session.is_active():
             await asyncio.sleep(10)  # Check every 10 seconds
@@ -439,7 +439,7 @@ class SessionManager:
             if hasattr(session, 'last_activity_at') and session.last_activity_at:
                 time_since_activity = (datetime.now() - session.last_activity_at).total_seconds()
                 if time_since_activity >= timeout_seconds:
-                    logger.info(f"N8N session {session.session_id[:8]} timed out after {timeout_seconds}s inactivity")
+                    logger.info(f"KIPP session {session.session_id[:8]} timed out after {timeout_seconds}s inactivity")
                     await self.terminate_session(session.session_id, reason="n8n_timeout")
                     break
             else:
@@ -447,7 +447,7 @@ class SessionManager:
                 if session.created_at:
                     time_since_creation = (datetime.now() - session.created_at).total_seconds()
                     if time_since_creation >= timeout_seconds:
-                        logger.info(f"N8N session {session.session_id[:8]} timed out after {timeout_seconds}s")
+                        logger.info(f"KIPP session {session.session_id[:8]} timed out after {timeout_seconds}s")
                         await self.terminate_session(session.session_id, reason="n8n_timeout")
                         break
 
@@ -1289,7 +1289,7 @@ class SessionManager:
             summary = await self._generate_summary_with_ai(conversation_text, session)
 
             # Send to Gmail console
-            # Call summaries now handled by N8N if needed
+            # Call summaries now handled by KIPP if needed
             logger.info(f"Call summary generated for {session.session_name}")
 
         except Exception as e:

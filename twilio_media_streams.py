@@ -264,7 +264,7 @@ class TwilioMediaStreamsHandler:
 
         @self.app.route('/webhook/n8n', methods=['POST'])
         def n8n_webhook():
-            """Handle incoming tasks from N8N - creates 'Mate_n8n' live session."""
+            """Handle incoming tasks from KIPP - creates 'Mate_n8n' live session."""
             import json
             try:
                 data = request.get_json() or request.form.to_dict()
@@ -274,16 +274,16 @@ class TwilioMediaStreamsHandler:
                     logger.warning("N8N webhook received empty message")
                     return Response(json.dumps({"error": "No message provided"}), status=400, mimetype='application/json')
                 
-                logger.info(f"Received task from N8N: {task_message[:100]}")
+                logger.info(f"Received task from KIPP: {task_message[:100]}")
                 
-                # Create N8N session asynchronously
+                # Create KIPP session asynchronously
                 async def create_n8n_session():
                     try:
-                        # Create a special session for N8N tasks
+                        # Create a special session for KIPP tasks
                         session = await self.session_manager.create_n8n_session(
                             task_message=task_message
                         )
-                        logger.info(f"Created N8N session: {session.session_name}")
+                        logger.info(f"Created KIPP session: {session.session_name}")
                     except Exception as e:
                         logger.error(f"Error creating N8N session: {e}")
                 
@@ -292,13 +292,13 @@ class TwilioMediaStreamsHandler:
                     asyncio.run_coroutine_threadsafe(
                         create_n8n_session(), self.main_loop)
                 else:
-                    logger.error("Cannot create N8N session: Main event loop not available")
+                    logger.error("Cannot create KIPP session: Main event loop not available")
                     return Response(json.dumps({"error": "System not ready"}), status=503, mimetype='application/json')
                 
                 return Response(json.dumps({"status": "accepted", "message": "Task received"}), status=200, mimetype='application/json')
                 
             except Exception as e:
-                logger.error(f"Error in N8N webhook: {e}")
+                logger.error(f"Error in KIPP webhook: {e}")
                 return Response(json.dumps({"error": str(e)}), status=500, mimetype='application/json')
 
         @self.app.route('/webhook/whatsapp', methods=['POST'])
@@ -569,7 +569,7 @@ class TwilioMediaStreamsHandler:
                                                 logger.info(f"User confirmed sending full response ({response_chars} chars) via email")
                                                 
                                                 # Send full response via email
-                                                # Detailed responses now handled by N8N
+                                                # Detailed responses now handled by KIPP
                                                 # Deprecated code path - removed
                                                 
                                                 # Clear pending response

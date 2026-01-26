@@ -339,11 +339,11 @@ class MessageRouter:
         # Get callback method from config
         callback_method = getattr(Config, 'CALLBACK_REPORT', 'message').lower()
 
-        # Send via message (SMS) or email - route through N8N
+        # Send via message (SMS) or email - route through KIPP
         if callback_method in ['message', 'email', 'both']:
             try:
-                from sub_agents_tars import N8NAgent
-                n8n_agent = N8NAgent()
+                from sub_agents_tars import KIPPAgent
+                n8n_agent = KIPPAgent()
                 
                 # Format message based on type
                 if message_type == "reminder":
@@ -355,7 +355,7 @@ class MessageRouter:
                 else:
                     formatted_message = f"Message from {from_name}:\n\n{message_body}"
                 
-                # Build N8N request based on delivery method
+                # Build KIPP request based on delivery method
                 if callback_method == 'message':
                     n8n_message = f"Send SMS to {Config.TARGET_PHONE_NUMBER}: {formatted_message}"
                 elif callback_method == 'email':
@@ -367,11 +367,11 @@ class MessageRouter:
                 
                 await n8n_agent.execute({"message": n8n_message})
                 logger.info(
-                    f"Sent fallback via N8N for message {msg['message_id'][:8]} (method: {callback_method})"
+                    f"Sent fallback via KIPP for message {msg['message_id'][:8]} (method: {callback_method})"
                 )
 
             except Exception as e:
-                logger.error(f"Failed to send fallback via N8N: {e}")
+                logger.error(f"Failed to send fallback via KIPP: {e}")
 
         # Send via call
         if callback_method in ['call', 'both']:

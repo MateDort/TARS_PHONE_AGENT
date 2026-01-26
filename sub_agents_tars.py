@@ -1607,20 +1607,20 @@ class ConversationSearchAgent(SubAgent):
             return f"Unknown search action: {action}"
 
 
-# MessagingAgent removed - all messaging moved to N8N via send_to_n8n function
+# MessagingAgent removed - all messaging moved to KIPP via send_to_n8n function
 
 
-class N8NAgent(SubAgent):
-    """Handles all communication tasks via N8N (Gmail, Calendar, Telegram, Discord)."""
+class KIPPAgent(SubAgent):
+    """Handles all communication tasks via KIPP (Gmail, Calendar, Telegram, Discord)."""
 
     def __init__(self):
         super().__init__(
-            name="n8n",
-            description="Send messages and tasks to N8N. N8N handles Gmail, Calendar, Telegram, and Discord automatically."
+            name="kipp",
+            description="Send messages and tasks to KIPP. KIPP handles Gmail, Calendar, Telegram, and Discord automatically."
         )
 
     async def execute(self, args: Dict[str, Any]) -> str:
-        """Execute N8N operation.
+        """Execute KIPP operation.
 
         Args:
             args: {
@@ -1632,10 +1632,10 @@ class N8NAgent(SubAgent):
         if not message:
             return "Please provide a message or task description, sir."
         
-        return await self._send_to_n8n(message)
+        return await self._send_to_kipp(message)
 
-    async def _send_to_n8n(self, message: str) -> str:
-        """Send message/task to N8N via HTTP POST.
+    async def _send_to_kipp(self, message: str) -> str:
+        """Send message/task to KIPP via HTTP POST.
 
         Args:
             message: User's request/task description
@@ -1649,25 +1649,25 @@ class N8NAgent(SubAgent):
         n8n_webhook_url = Config.N8N_WEBHOOK_URL
         
         if not n8n_webhook_url:
-            logger.error("N8N_WEBHOOK_URL not configured")
-            return "N8N webhook URL is not configured, sir. Please set N8N_WEBHOOK_URL in your .env file."
+            logger.error("KIPP webhook URL not configured")
+            return "KIPP webhook URL is not configured, sir. Please set N8N_WEBHOOK_URL in your .env file."
         
         # Fix common .env file issues: remove duplicate variable name if present
         if n8n_webhook_url.startswith("N8N_WEBHOOK_URL="):
             n8n_webhook_url = n8n_webhook_url.replace("N8N_WEBHOOK_URL=", "", 1)
-            logger.warning("Fixed N8N_WEBHOOK_URL: removed duplicate variable name prefix")
+            logger.warning("Fixed KIPP webhook URL: removed duplicate variable name prefix")
         
         # #region agent log
         try:
             with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                 import time
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"sub_agents_tars.py:_send_to_n8n","message":"Attempting N8N connection","data":{"url_length":len(n8n_webhook_url),"url_starts_with_http":n8n_webhook_url.startswith("http"),"message_preview":message[:50]},"timestamp":int(time.time()*1000)})+"\n")
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"sub_agents_tars.py:_send_to_kipp","message":"Attempting KIPP connection","data":{"url_length":len(n8n_webhook_url),"url_starts_with_http":n8n_webhook_url.startswith("http"),"message_preview":message[:50]},"timestamp":int(time.time()*1000)})+"\n")
         except:
             pass
         # #endregion
         
         # Enhance message for email requests - replace "Máté" with actual email
-        # This helps N8N's AI agent know the recipient email address
+        # This helps KIPP's AI agent know the recipient email address
         enhanced_message = message
         try:
             if Config.TARGET_EMAIL and ("email" in message.lower() or "send" in message.lower()):
@@ -1691,9 +1691,9 @@ class N8NAgent(SubAgent):
                             flags=re.IGNORECASE
                         )
                     if enhanced_message != message:
-                        logger.info(f"Enhanced N8N message: '{message}' -> '{enhanced_message}'")
+                        logger.info(f"Enhanced KIPP message: '{message}' -> '{enhanced_message}'")
         except Exception as e:
-            logger.warning(f"Error enhancing N8N message, using original: {e}")
+            logger.warning(f"Error enhancing KIPP message, using original: {e}")
             enhanced_message = message  # Fallback to original message
         
         try:
@@ -1705,7 +1705,7 @@ class N8NAgent(SubAgent):
             try:
                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                     import time
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"sub_agents_tars.py:_send_to_n8n","message":"Creating HTTP session","data":{"timeout":10},"timestamp":int(time.time()*1000)})+"\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"sub_agents_tars.py:_send_to_kipp","message":"Creating HTTP session","data":{"timeout":10},"timestamp":int(time.time()*1000)})+"\n")
             except:
                 pass
             # #endregion
@@ -1715,7 +1715,7 @@ class N8NAgent(SubAgent):
                 try:
                     with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                         import time
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"sub_agents_tars.py:_send_to_n8n","message":"Sending POST request","data":{"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"sub_agents_tars.py:_send_to_kipp","message":"Sending POST request","data":{"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
                 except:
                     pass
                 # #endregion
@@ -1729,7 +1729,7 @@ class N8NAgent(SubAgent):
                     try:
                         with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                             import time
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_n8n","message":"Received HTTP response","data":{"status":response.status,"headers":dict(response.headers)},"timestamp":int(time.time()*1000)})+"\n")
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_kipp","message":"Received HTTP response","data":{"status":response.status,"headers":dict(response.headers)},"timestamp":int(time.time()*1000)})+"\n")
                     except:
                         pass
                     # #endregion
@@ -1741,81 +1741,81 @@ class N8NAgent(SubAgent):
                             try:
                                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                                     import time
-                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_n8n","message":"N8N response received","data":{"payload_sent":payload,"response_body":result},"timestamp":int(time.time()*1000)})+"\n")
+                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_kipp","message":"KIPP response received","data":{"payload_sent":payload,"response_body":result},"timestamp":int(time.time()*1000)})+"\n")
                             except:
                                 pass
                             # #endregion
-                            logger.info(f"Successfully sent message to N8N: {message[:50]}... Response: {result}")
-                            return f"I've sent your request to N8N, sir. {result.get('message', 'Task received.')}"
+                            logger.info(f"Successfully sent message to KIPP: {message[:50]}... Response: {result}")
+                            return f"I've sent your request to KIPP, sir. {result.get('message', 'Task received.')}"
                         except:
                             text_result = await response.text()
                             # #region agent log
                             try:
                                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                                     import time
-                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_n8n","message":"N8N text response received","data":{"payload_sent":payload,"response_text":text_result},"timestamp":int(time.time()*1000)})+"\n")
+                                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"sub_agents_tars.py:_send_to_kipp","message":"KIPP text response received","data":{"payload_sent":payload,"response_text":text_result},"timestamp":int(time.time()*1000)})+"\n")
                             except:
                                 pass
                             # #endregion
-                            logger.info(f"Successfully sent message to N8N: {message[:50]}... Response: {text_result}")
-                            return f"I've sent your request to N8N, sir. {text_result if text_result else 'Task received.'}"
+                            logger.info(f"Successfully sent message to KIPP: {message[:50]}... Response: {text_result}")
+                            return f"I've sent your request to KIPP, sir. {text_result if text_result else 'Task received.'}"
                     else:
                         error_text = await response.text()
-                        logger.error(f"N8N webhook error {response.status}: {error_text}")
+                        logger.error(f"KIPP webhook error {response.status}: {error_text}")
                         # #region agent log
                         try:
                             with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                                 import time
-                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"sub_agents_tars.py:_send_to_n8n","message":"N8N returned non-200 status","data":{"status":response.status,"error_text":error_text[:200]},"timestamp":int(time.time()*1000)})+"\n")
+                                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"sub_agents_tars.py:_send_to_kipp","message":"KIPP returned non-200 status","data":{"status":response.status,"error_text":error_text[:200]},"timestamp":int(time.time()*1000)})+"\n")
                         except:
                             pass
                         # #endregion
-                        return f"I encountered an error sending to N8N (status {response.status}), sir. Please try again."
+                        return f"I encountered an error sending to KIPP (status {response.status}), sir. Please try again."
         
         except aiohttp.ClientConnectorError as e:
-            logger.error(f"Error connecting to N8N (connection failed): {type(e).__name__}: {e}")
+            logger.error(f"Error connecting to KIPP (connection failed): {type(e).__name__}: {e}")
             # #region agent log
             try:
                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                     import time
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"sub_agents_tars.py:_send_to_n8n","message":"Connection error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"sub_agents_tars.py:_send_to_kipp","message":"Connection error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
             except:
                 pass
             # #endregion
-            return f"I couldn't connect to N8N, sir. Please check the webhook URL and try again."
+            return f"I couldn't connect to KIPP, sir. Please check the webhook URL and try again."
         except aiohttp.ClientError as e:
-            logger.error(f"Error connecting to N8N (client error): {type(e).__name__}: {e}")
+            logger.error(f"Error connecting to KIPP (client error): {type(e).__name__}: {e}")
             # #region agent log
             try:
                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                     import time
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"sub_agents_tars.py:_send_to_n8n","message":"Client error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"sub_agents_tars.py:_send_to_kipp","message":"Client error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
             except:
                 pass
             # #endregion
-            return f"I couldn't connect to N8N, sir. Please check the webhook URL and try again."
+            return f"I couldn't connect to KIPP, sir. Please check the webhook URL and try again."
         except asyncio.TimeoutError as e:
-            logger.error(f"Error connecting to N8N (timeout): {e}")
+            logger.error(f"Error connecting to KIPP (timeout): {e}")
             # #region agent log
             try:
                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                     import time
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"sub_agents_tars.py:_send_to_n8n","message":"Timeout error","data":{"error_type":type(e).__name__,"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"sub_agents_tars.py:_send_to_kipp","message":"Timeout error","data":{"error_type":type(e).__name__,"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
             except:
                 pass
             # #endregion
-            return f"Connection to N8N timed out, sir. Please check the webhook URL and try again."
+            return f"Connection to KIPP timed out, sir. Please check the webhook URL and try again."
         except Exception as e:
-            logger.error(f"Unexpected error sending to N8N: {type(e).__name__}: {e}")
+            logger.error(f"Unexpected error sending to KIPP: {type(e).__name__}: {e}")
             # #region agent log
             try:
                 with open('/Users/matedort/TARS_PHONE_AGENT/.cursor/debug.log', 'a') as f:
                     import time
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"sub_agents_tars.py:_send_to_n8n","message":"Unexpected error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"ALL","location":"sub_agents_tars.py:_send_to_kipp","message":"Unexpected error","data":{"error_type":type(e).__name__,"error_message":str(e),"url":n8n_webhook_url},"timestamp":int(time.time()*1000)})+"\n")
             except:
                 pass
             # #endregion
-            return f"An unexpected error occurred while sending to N8N, sir: {str(e)}"
+            return f"An unexpected error occurred while sending to KIPP, sir: {str(e)}"
 
 
 # Agent registry
@@ -1849,10 +1849,10 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
         agents["inter_session"] = InterSessionAgent(
             session_manager, router, db, twilio_handler)
 
-    # MessagingAgent removed - all messaging moved to N8N
+    # MessagingAgent removed - all messaging moved to KIPP
 
-    # Add N8N agent for all communication tasks
-    agents["n8n"] = N8NAgent()
+    # Add KIPP agent for all communication tasks
+    agents["kipp"] = KIPPAgent()
 
     return agents
 
@@ -2295,7 +2295,7 @@ def get_function_declarations() -> list:
         },
         {
             "name": "send_to_n8n",
-            "description": "Send a message or task to N8N. N8N handles Gmail, Calendar, Telegram, and Discord. Just describe what you want to do (e.g., 'send email to John about meeting', 'send telegram message to Helen', 'check calendar for tomorrow', 'send discord message to team'). N8N will automatically figure out which tool to use based on your request.",
+            "description": "Send a message or task to KIPP. KIPP handles Gmail, Calendar, Telegram, and Discord. Just describe what you want to do (e.g., 'send email to John about meeting', 'send telegram message to Helen', 'check calendar for tomorrow', 'send discord message to team'). KIPP will automatically figure out which tool to use based on your request.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {

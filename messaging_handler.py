@@ -1,4 +1,4 @@
-"""Messaging handler for Twilio (phone calls only - all messaging moved to N8N)."""
+"""Messaging handler for Twilio (phone calls only - all messaging moved to KIPP)."""
 import logging
 from typing import Optional
 from twilio.rest import Client
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class MessagingHandler:
-    """Handles Twilio client for phone calls (messaging moved to N8N)."""
+    """Handles Twilio client for phone calls (messaging moved to KIPP)."""
 
     def __init__(self, database: Database, twilio_client: Client, session_manager=None, router=None, twilio_handler=None):
         """Initialize messaging handler (Twilio-only, for phone calls).
@@ -41,10 +41,10 @@ class MessagingHandler:
             message_sid: Twilio message SID
             to_number: The number the message was sent to (bot's number)
         """
-        logger.warning(f"process_incoming_message called but messaging moved to N8N. Message from {from_number}: {message_body[:50]}")
-        # Route to N8N via send_to_n8n
-        from sub_agents_tars import N8NAgent
-        n8n_agent = N8NAgent()
+        logger.warning(f"process_incoming_message called but messaging moved to KIPP. Message from {from_number}: {message_body[:50]}")
+        # Route to KIPP via send_to_n8n
+        from sub_agents_tars import KIPPAgent
+        n8n_agent = KIPPAgent()
         message = f"Received {medium} from {from_number}: {message_body}"
         return await n8n_agent.execute({"message": message})
 
@@ -52,25 +52,25 @@ class MessagingHandler:
         """Send message (deprecated - use send_to_n8n instead).
         
         This method is kept for compatibility but should not be used.
-        All messaging has been moved to N8N.
+        All messaging has been moved to KIPP.
         """
-        logger.warning("send_message called but messaging moved to N8N. Use send_to_n8n instead.")
+        logger.warning("send_message called but messaging moved to KIPP. Use send_to_n8n instead.")
         return None
 
     def send_email(self, to_email: str, subject: str, body: str) -> Optional[str]:
         """Send email (deprecated - use send_to_n8n instead).
         
         This method is kept for compatibility but should not be used.
-        All email has been moved to N8N.
+        All email has been moved to KIPP.
         """
-        logger.warning("send_email called but email moved to N8N. Use send_to_n8n instead.")
+        logger.warning("send_email called but email moved to KIPP. Use send_to_n8n instead.")
         return None
 
     def send_link(self, to_number: str, url: str, description: str = '', medium: str = 'sms') -> Optional[str]:
         """Send link (deprecated - use send_to_n8n instead).
         
         This method is kept for compatibility but should not be used.
-        All messaging has been moved to N8N.
+        All messaging has been moved to KIPP.
         """
-        logger.warning("send_link called but messaging moved to N8N. Use send_to_n8n instead.")
+        logger.warning("send_link called but messaging moved to KIPP. Use send_to_n8n instead.")
         return None

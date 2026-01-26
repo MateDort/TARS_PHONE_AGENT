@@ -57,13 +57,13 @@ class Config:
     # Format: whatsapp:+1234567890
     WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', 'whatsapp:+14155238886')
 
-    # Important Email Notification Configuration (deprecated - handled by N8N)
+    # Important Email Notification Configuration (deprecated - handled by KIPP)
     # Options: call, message, both
     IMPORTANT_EMAIL_NOTIFICATION = os.getenv('IMPORTANT_EMAIL_NOTIFICATION', 'call').lower()
 
-    # N8N Configuration
+    # KIPP Configuration (N8N backend)
     N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
-    N8N_TARS_WEBHOOK_URL = os.getenv('N8N_TARS_WEBHOOK_URL', '').strip()  # For N8N to send tasks back to TARS
+    N8N_TARS_WEBHOOK_URL = os.getenv('N8N_TARS_WEBHOOK_URL', '').strip()  # For KIPP to send tasks back to TARS
 
     # TARS Personality Configuration (Dynamically Editable)
     HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))  # Default 70%

@@ -305,15 +305,15 @@ Be conversational, friendly, and helpful."""
                 end_of_turn=False
             )
 
-            # Send full content via N8N
+            # Send full content via KIPP
             if self._session_context and hasattr(self._session_context, 'session_id'):
                 try:
-                    from sub_agents_tars import N8NAgent
-                    n8n_agent = N8NAgent()
+                    from sub_agents_tars import KIPPAgent
+                    n8n_agent = KIPPAgent()
                     n8n_message = f"Send email to {Config.TARGET_EMAIL} with subject 'TARS {reason.title()}' and body '{text}'"
                     await n8n_agent.execute({"message": n8n_message})
                 except Exception as e:
-                    logger.error(f"Error sending detailed response via N8N: {e}")
+                    logger.error(f"Error sending detailed response via KIPP: {e}")
 
             return True  # Handled via message
 

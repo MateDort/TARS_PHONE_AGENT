@@ -177,8 +177,8 @@ class TARSPhoneAgent:
             "lookup_contact": agents["contacts"],
             "send_notification": agents["notification"],
             "search_conversations": agents.get("conversation_search"),
-            # N8N agent for all communication tasks
-            "send_to_n8n": agents.get("n8n"),
+            # KIPP agent for all communication tasks
+            "send_to_n8n": agents.get("kipp"),
             # May be None if twilio not available
             "make_goal_call": agents.get("outbound_call"),
             # InterSessionAgent functions

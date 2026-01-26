@@ -175,11 +175,11 @@ class ReminderChecker:
                     except Exception as e:
                         logger.error(f"Error making reminder call: {e}")
 
-            # Send via message (SMS) or email - route through N8N
+            # Send via message (SMS) or email - route through KIPP
             if delivery_method in ['message', 'email', 'both']:
                 try:
-                    from sub_agents_tars import N8NAgent
-                    n8n_agent = N8NAgent()
+                    from sub_agents_tars import KIPPAgent
+                    n8n_agent = KIPPAgent()
                     
                     if delivery_method == 'message':
                         message = f"Send SMS reminder to {Config.TARGET_PHONE_NUMBER}: ⏰ Reminder: {title}"
@@ -189,9 +189,9 @@ class ReminderChecker:
                         message = f"Send reminder via SMS to {Config.TARGET_PHONE_NUMBER} and email to {Config.TARGET_EMAIL}: ⏰ Reminder: {title}"
                     
                     await n8n_agent.execute({"message": message})
-                    logger.info(f"Sent reminder via N8N for: {title} (method: {delivery_method})")
+                    logger.info(f"Sent reminder via KIPP for: {title} (method: {delivery_method})")
                 except Exception as e:
-                    logger.error(f"Error sending reminder via N8N: {e}")
+                    logger.error(f"Error sending reminder via KIPP: {e}")
 
         # Mark as triggered
         self.db.mark_reminder_triggered(reminder_id)
