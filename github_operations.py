@@ -30,14 +30,15 @@ class GitHubOperations:
                 self.github_client = Github(self.token)
                 # Test authentication
                 user = self.github_client.get_user()
-                logger.info(f"GitHub authenticated as: {user.login}")
-            except ImportError:
-                logger.warning("PyGithub not installed. Install with: pip install PyGithub")
+                logger.info(f"✓ GitHub authenticated as: {user.login}")
+            except ImportError as ie:
+                logger.warning(f"PyGithub not installed: {ie}. Install with: pip install PyGithub")
+                self.github_client = None
             except Exception as e:
-                logger.error(f"GitHub authentication failed: {e}")
+                logger.error(f"GitHub authentication failed: {e} (token length: {len(self.token) if self.token else 0})")
                 self.github_client = None
         else:
-            logger.warning("No GitHub token configured. GitHub API operations will be unavailable.")
+            logger.info("No GitHub token in config. GitHub API operations will use git CLI only.")
 
     def is_authenticated(self) -> bool:
         """Check if GitHub client is authenticated."""
