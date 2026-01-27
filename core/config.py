@@ -38,6 +38,11 @@ class Config:
     # Voice name: Kore, Puck, or Charon
     GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')
 
+    # Claude Configuration (for programming tasks)
+    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+    CLAUDE_COMPLEX_MODEL = os.getenv('CLAUDE_COMPLEX_MODEL', 'claude-sonnet-4-20250514')  # Sonnet 4.5 for complex tasks
+    CLAUDE_FAST_MODEL = os.getenv('CLAUDE_FAST_MODEL', 'claude-3-5-haiku-20241022')  # Haiku 3.5 for simple tasks
+
     # Agent Configuration
     AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower(
     ) == 'true'  # Auto-make call on startup
@@ -134,6 +139,8 @@ class Config:
     PROJECTS_ROOT = os.getenv('PROJECTS_ROOT', '/Users/matedort/')
     MAX_COMMAND_TIMEOUT = int(os.getenv('MAX_COMMAND_TIMEOUT', '60'))
     ENABLE_CODE_BACKUPS = os.getenv('ENABLE_CODE_BACKUPS', 'true').lower() == 'true'
+    ENABLE_PROGRAMMING_DOCS = os.getenv('ENABLE_PROGRAMMING_DOCS', 'true').lower() == 'true'
+    PROGRAMMING_DOCS_DIR = os.getenv('PROGRAMMING_DOCS_DIR', '.tars_docs')
 
     @classmethod
     def validate(cls):

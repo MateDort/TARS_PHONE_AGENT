@@ -10,6 +10,7 @@ from core.database import Database
 from utils.translations import get_text, format_text
 from core.config import Config
 import re
+import anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -1844,6 +1845,21 @@ class ProgrammerAgent(SubAgent):
         self.db = db
         from utils.github_operations import GitHubOperations
         self.github = GitHubOperations()
+        self.current_project_path = None  # Track current project for relative path resolution
+        
+        # Initialize Claude client for code generation and editing
+        self.anthropic_client = None
+        if Config.ANTHROPIC_API_KEY:
+            try:
+                self.anthropic_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+                self.complex_model = Config.CLAUDE_COMPLEX_MODEL  # claude-sonnet-4-20250514 (Sonnet 4.5)
+                self.fast_model = Config.CLAUDE_FAST_MODEL  # claude-3-5-haiku-20241022 (Haiku 3.5)
+                logger.info(f"Claude client initialized with complex model: {self.complex_model}, fast model: {self.fast_model}")
+            except Exception as e:
+                logger.error(f"Failed to initialize Claude client: {e}")
+                self.anthropic_client = None
+        else:
+            logger.warning("ANTHROPIC_API_KEY not set - Claude features disabled")
         
         # Safe commands that don't need confirmation
         self.safe_commands = {
@@ -2065,6 +2081,9 @@ class ProgrammerAgent(SubAgent):
             git_status = 'initialized' if (project_path / '.git').exists() else 'none'
             self.db.cache_project(project_name, str(project_path), project_type, git_status)
             
+            # Set as current project for relative path resolution
+            self.current_project_path = project_path
+            
             return f"Opened project '{project_name}':\nPath: {project_path}\nType: {project_type}\n\nStructure:\n{structure}"
             
         except Exception as e:
@@ -2153,7 +2172,11 @@ class ProgrammerAgent(SubAgent):
             from pathlib import Path
             
             command = args.get('command', '').strip()
-            working_dir = args.get('working_directory', Config.PROJECTS_ROOT)
+            # Use current project path if set and no explicit working_directory provided
+            if 'working_directory' not in args and self.current_project_path:
+                working_dir = str(self.current_project_path)
+            else:
+                working_dir = args.get('working_directory', Config.PROJECTS_ROOT)
             timeout = args.get('timeout', Config.MAX_COMMAND_TIMEOUT)
             
             if not command:
@@ -2193,7 +2216,8 @@ class ProgrammerAgent(SubAgent):
                     cwd=str(work_path),
                     capture_output=True,
                     text=True,
-                    timeout=timeout
+                    timeout=timeout,
+                    env=os.environ.copy()  # Pass full environment to find all programs (cursor, code, etc.)
                 )
                 
                 output = result.stdout if result.stdout else result.stderr
@@ -2225,6 +2249,31 @@ class ProgrammerAgent(SubAgent):
         
         return False
 
+    def _resolve_file_path(self, file_path: str) -> str:
+        """Resolve file path, handling relative paths against current project.
+        
+        Args:
+            file_path: File path (absolute or relative)
+            
+        Returns:
+            Resolved absolute file path
+        """
+        from pathlib import Path
+        
+        path = Path(file_path).expanduser()
+        
+        # If path is already absolute, return as-is
+        if path.is_absolute():
+            return str(path)
+        
+        # If relative path and we have a current project, resolve against it
+        if self.current_project_path:
+            resolved = self.current_project_path / file_path
+            return str(resolved.resolve())
+        
+        # Otherwise, resolve relative to current working directory
+        return str(path.resolve())
+
     async def edit_code(self, args: Dict[str, Any]) -> str:
         """Edit code files with AI assistance.
 
@@ -2242,10 +2291,18 @@ class ProgrammerAgent(SubAgent):
         if not file_path:
             return "Please provide a file path, sir."
         
+        # Resolve relative paths against current project if set
+        file_path = self._resolve_file_path(file_path)
+        
         if action == 'read':
             return await self._read_file(file_path)
         elif action == 'create':
-            return await self._create_file(file_path, args.get('content', ''))
+            # Support both direct content and AI-generated content via description
+            return await self._create_file(
+                file_path, 
+                content=args.get('content'),
+                description=args.get('changes_description')
+            )
         elif action == 'edit':
             return await self._edit_file(file_path, args.get('changes_description', ''))
         elif action == 'delete':
@@ -2272,10 +2329,17 @@ class ProgrammerAgent(SubAgent):
             logger.error(f"Error reading file: {e}")
             return f"Error reading file: {str(e)}, sir."
 
-    async def _create_file(self, file_path: str, content: str) -> str:
-        """Create a new file."""
+    async def _create_file(self, file_path: str, content: str = None, description: str = None) -> str:
+        """Create a new file, optionally using Claude to generate content.
+        
+        Args:
+            file_path: Path to create the file
+            content: Direct content to write (optional)
+            description: Description of what to create (used with Claude if content not provided)
+        """
         try:
             from pathlib import Path
+            from datetime import datetime
             
             path = Path(file_path).expanduser()
             
@@ -2285,18 +2349,61 @@ class ProgrammerAgent(SubAgent):
             # Create parent directories if needed
             path.parent.mkdir(parents=True, exist_ok=True)
             
+            model_used = None
+            complexity = 0
+            
+            # If content not provided, use Claude to generate it
+            if not content and description and self.anthropic_client:
+                logger.info(f"Using Claude to generate content for new file: {file_path}")
+                result = await self._generate_code_with_claude(
+                    task_description=description,
+                    file_path=file_path,
+                    existing_content=None
+                )
+                content = result['code']
+                model_used = result['model_used']
+                complexity = result['complexity']
+                logger.info(f"Content generated using {model_used}")
+            elif not content:
+                # No content and no description provided
+                content = ""  # Create empty file
+            
             # Write content
             path.write_text(content)
             
             logger.info(f"Created file: {file_path}")
-            return f"Created file {file_path}, sir."
+            
+            # Generate documentation if enabled and Claude was used
+            if Config.ENABLE_PROGRAMMING_DOCS and model_used:
+                doc_content = await self._generate_documentation(
+                    operation_type='create',
+                    file_path=file_path,
+                    model_used=model_used,
+                    complexity=complexity,
+                    logic_explanation=description or "File created with provided content"
+                )
+                
+                # Save documentation
+                docs_dir = Path(self.current_project_path or Path.cwd()) / Config.PROGRAMMING_DOCS_DIR
+                docs_dir.mkdir(exist_ok=True)
+                doc_file = docs_dir / f"create_{path.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                doc_file.write_text(doc_content)
+                logger.info(f"Documentation saved to: {doc_file}")
+                
+                # Send to Discord
+                await self._send_docs_to_discord(doc_content, file_path)
+            
+            result_msg = f"Created file {file_path}"
+            if model_used:
+                result_msg += f" using {model_used}"
+            return f"{result_msg}, sir."
             
         except Exception as e:
             logger.error(f"Error creating file: {e}")
             return f"Error creating file: {str(e)}, sir."
 
     async def _edit_file(self, file_path: str, changes_description: str) -> str:
-        """Edit a file using AI."""
+        """Edit a file using Claude AI."""
         try:
             from pathlib import Path
             import difflib
@@ -2317,33 +2424,17 @@ class ProgrammerAgent(SubAgent):
                 backup_name = f"{path.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 (backup_dir / backup_name).write_text(original_content)
             
-            # Use Gemini to generate changes
-            from google import genai
-            client = genai.Client(
-                http_options={"api_version": "v1beta"},
-                api_key=Config.GEMINI_API_KEY
+            # Use Claude to generate changes
+            logger.info(f"Using Claude to edit file: {file_path}")
+            result = await self._generate_code_with_claude(
+                task_description=changes_description,
+                file_path=file_path,
+                existing_content=original_content
             )
             
-            prompt = f"""Analyze this code and apply these changes: {changes_description}
-
-Current code in {path.name}:
-```
-{original_content}
-```
-
-Respond with ONLY the complete modified file content, no explanations."""
-            
-            response = client.models.generate_content(
-                model="gemini-2.0-flash-exp",
-                contents=prompt
-            )
-            
-            modified_content = response.text.strip()
-            
-            # Remove markdown code blocks if present
-            if modified_content.startswith('```'):
-                lines = modified_content.split('\n')
-                modified_content = '\n'.join(lines[1:-1]) if len(lines) > 2 else modified_content
+            modified_content = result['code']
+            model_used = result['model_used']
+            complexity = result['complexity']
             
             # Generate diff
             diff = difflib.unified_diff(
@@ -2358,8 +2449,30 @@ Respond with ONLY the complete modified file content, no explanations."""
             # Write modified content
             path.write_text(modified_content)
             
-            logger.info(f"Edited file: {file_path}")
-            return f"Edited file {file_path}. Changes:\n\n{diff_text[:1000]}"  # Limit diff output
+            logger.info(f"Edited file: {file_path} using {model_used}")
+            
+            # Generate documentation if enabled
+            if Config.ENABLE_PROGRAMMING_DOCS:
+                doc_content = await self._generate_documentation(
+                    operation_type='edit',
+                    file_path=file_path,
+                    model_used=model_used,
+                    complexity=complexity,
+                    changes=diff_text[:2000],  # Limit diff in docs
+                    logic_explanation=changes_description
+                )
+                
+                # Save documentation
+                docs_dir = Path(self.current_project_path or Path.cwd()) / Config.PROGRAMMING_DOCS_DIR
+                docs_dir.mkdir(exist_ok=True)
+                doc_file = docs_dir / f"edit_{path.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                doc_file.write_text(doc_content)
+                logger.info(f"Documentation saved to: {doc_file}")
+                
+                # Send to Discord
+                await self._send_docs_to_discord(doc_content, file_path)
+            
+            return f"Edited file {file_path} using {model_used}. Changes:\n\n{diff_text[:1000]}"
             
         except Exception as e:
             logger.error(f"Error editing file: {e}")
@@ -2385,6 +2498,294 @@ Respond with ONLY the complete modified file content, no explanations."""
             logger.error(f"Error deleting file: {e}")
             return f"Error deleting file: {str(e)}, sir."
 
+    async def _analyze_task_complexity(self, task_description: str, file_path: str = None, existing_content: str = None) -> int:
+        """Analyze task complexity on a scale of 0-10.
+        
+        Args:
+            task_description: Description of the task
+            file_path: Optional file path being worked on
+            existing_content: Optional existing file content
+            
+        Returns:
+            Complexity score (0-10)
+        """
+        complexity = 0
+        
+        # Check task description for complexity keywords
+        complex_keywords = [
+            'refactor', 'architecture', 'debug', 'design', 'optimize', 
+            'complex', 'algorithm', 'performance', 'restructure', 'migrate'
+        ]
+        simple_keywords = ['add comment', 'fix typo', 'rename', 'format', 'style']
+        
+        task_lower = task_description.lower()
+        
+        # Check for complex keywords (+2 per keyword, max +6)
+        for keyword in complex_keywords:
+            if keyword in task_lower:
+                complexity += 2
+        
+        # Check for simple keywords (-2 per keyword)
+        for keyword in simple_keywords:
+            if keyword in task_lower:
+                complexity -= 2
+        
+        # File size complexity
+        if existing_content:
+            lines = len(existing_content.split('\n'))
+            if lines > 500:
+                complexity += 3
+            elif lines > 200:
+                complexity += 2
+            elif lines > 100:
+                complexity += 1
+        
+        # Multi-file operations
+        if 'multiple files' in task_lower or 'all files' in task_lower:
+            complexity += 3
+        
+        # Clamp between 0 and 10
+        complexity = max(0, min(10, complexity))
+        
+        logger.info(f"Task complexity analysis: {complexity}/10 for '{task_description[:50]}...'")
+        return complexity
+    
+    async def _should_use_complex_model(self, task_description: str, file_path: str = None, existing_content: str = None) -> bool:
+        """Determine if we should use the complex model (Claude Sonnet 4.5) or fast model (Claude 3.5 Haiku).
+        
+        Args:
+            task_description: Description of the task
+            file_path: Optional file path being worked on
+            existing_content: Optional existing file content
+            
+        Returns:
+            True if complex model should be used, False for fast model
+        """
+        complexity = await self._analyze_task_complexity(task_description, file_path, existing_content)
+        
+        # Use complex model for complexity >= 5
+        use_complex = complexity >= 5
+        
+        model_name = "Claude Sonnet 4.5 (complex)" if use_complex else "Claude 3.5 Haiku (fast)"
+        logger.info(f"Selected {model_name} for complexity {complexity}/10")
+        
+        return use_complex
+    
+    async def _call_claude(self, prompt: str, model: str, system_prompt: str = None) -> str:
+        """Call Claude API with the given prompt.
+        
+        Args:
+            prompt: The prompt to send to Claude
+            model: Model identifier (complex or fast)
+            system_prompt: Optional system prompt
+            
+        Returns:
+            Claude's response text
+        """
+        if not self.anthropic_client:
+            raise Exception("Claude client not initialized. Please set ANTHROPIC_API_KEY in your .env file.")
+        
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+            
+            kwargs = {
+                "model": model,
+                "max_tokens": 8192,
+                "messages": messages
+            }
+            
+            if system_prompt:
+                kwargs["system"] = system_prompt
+            
+            response = self.anthropic_client.messages.create(**kwargs)
+            
+            # Extract text from response
+            result_text = ""
+            for content_block in response.content:
+                if hasattr(content_block, 'text'):
+                    result_text += content_block.text
+            
+            return result_text.strip()
+            
+        except Exception as e:
+            logger.error(f"Error calling Claude API: {e}")
+            raise
+    
+    async def _generate_code_with_claude(self, task_description: str, file_path: str, existing_content: str = None) -> dict:
+        """Generate or modify code using Claude.
+        
+        Args:
+            task_description: Description of what code to generate/modify
+            file_path: Path to the file
+            existing_content: Existing file content (for edits)
+            
+        Returns:
+            dict with 'code', 'model_used', 'complexity', 'explanation'
+        """
+        # Determine which model to use
+        use_complex = await self._should_use_complex_model(task_description, file_path, existing_content)
+        model = self.complex_model if use_complex else self.fast_model
+        model_name = "Claude Sonnet 4.5" if use_complex else "Claude 3.5 Haiku"
+        
+        # Build prompt
+        if existing_content:
+            # Editing existing file
+            prompt = f"""Analyze this code and apply these changes: {task_description}
+
+Current code in {Path(file_path).name}:
+```
+{existing_content}
+```
+
+Respond with ONLY the complete modified file content, no explanations or markdown code blocks."""
+        else:
+            # Creating new file
+            prompt = f"""Create a new file: {task_description}
+
+File: {Path(file_path).name}
+
+Respond with ONLY the complete file content, no explanations or markdown code blocks."""
+        
+        system_prompt = "You are an expert programmer. Generate clean, well-documented, production-ready code. Return ONLY the code, no markdown formatting or explanations."
+        
+        # Call Claude
+        logger.info(f"Calling {model_name} for code generation/modification")
+        response_text = await self._call_claude(prompt, model, system_prompt)
+        
+        # Clean up response (remove markdown code blocks if present)
+        code = response_text
+        if code.startswith('```'):
+            lines = code.split('\n')
+            # Remove first line (```language) and last line (```)
+            if len(lines) > 2 and lines[-1].strip() == '```':
+                code = '\n'.join(lines[1:-1])
+        
+        # Get complexity score
+        complexity = await self._analyze_task_complexity(task_description, file_path, existing_content)
+        
+        return {
+            'code': code,
+            'model_used': model_name,
+            'complexity': complexity,
+            'explanation': task_description
+        }
+    
+    async def _generate_documentation(self, operation_type: str, file_path: str, model_used: str, 
+                                      complexity: int, changes: str = None, test_results: str = None,
+                                      logic_explanation: str = None) -> str:
+        """Generate markdown documentation for a file operation.
+        
+        Args:
+            operation_type: 'create' or 'edit'
+            file_path: Path to the file
+            model_used: Which Claude model was used
+            complexity: Complexity score (0-10)
+            changes: Optional changes/diff summary
+            test_results: Optional test results
+            logic_explanation: Optional explanation of logic used
+            
+        Returns:
+            Markdown documentation content
+        """
+        from datetime import datetime
+        
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        filename = Path(file_path).name
+        
+        if operation_type == 'create':
+            doc = f"""# File Creation Report: {filename}
+
+**Operation**: File Creation
+**Timestamp**: {timestamp}
+**File Path**: {file_path}
+**Model Used**: {model_used}
+**Complexity Score**: {complexity}/10
+
+## Logic Used
+{logic_explanation or 'No detailed explanation provided'}
+
+## Test Results
+{test_results or 'No tests run'}
+
+---
+*Generated by TARS Programming Agent*
+"""
+        else:  # edit
+            doc = f"""# File Edit Report: {filename}
+
+**Operation**: File Edit
+**Timestamp**: {timestamp}
+**File Path**: {file_path}
+**Model Used**: {model_used}
+**Complexity Score**: {complexity}/10
+
+## Changes Made
+{changes or 'No detailed change summary available'}
+
+## Logic Used
+{logic_explanation or 'No detailed explanation provided'}
+
+## Test Results
+{test_results or 'No tests run'}
+
+---
+*Generated by TARS Programming Agent*
+"""
+        
+        return doc
+    
+    async def _send_docs_to_discord(self, doc_content: str, file_path: str) -> str:
+        """Send documentation to Discord via N8N webhook.
+        
+        Args:
+            doc_content: Markdown documentation content
+            file_path: Path to the file (for title)
+            
+        Returns:
+            Status message
+        """
+        if not Config.N8N_WEBHOOK_URL:
+            logger.warning("N8N webhook not configured, skipping Discord notification")
+            return "Documentation generated but Discord notification skipped (webhook not configured)"
+        
+        try:
+            # Use KIPPAgent's send method by constructing similar message
+            filename = Path(file_path).name
+            message = f"send discord message: Programming documentation for {filename}\n\n{doc_content}"
+            
+            # Import and use KIPPAgent's send method
+            import aiohttp
+            import json
+            
+            n8n_webhook_url = Config.N8N_WEBHOOK_URL
+            
+            payload = {
+                "message": message
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    n8n_webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Successfully sent programming documentation for {filename} to Discord")
+                        return "Documentation sent to Discord"
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to send to Discord: {response.status} - {error_text}")
+                        return f"Documentation generated but Discord notification failed (status {response.status})"
+        
+        except Exception as e:
+            logger.error(f"Error sending documentation to Discord: {e}")
+            return f"Documentation generated but Discord notification failed: {str(e)}"
+
     async def github_operation(self, args: Dict[str, Any]) -> str:
         """Handle GitHub operations.
 
@@ -2400,7 +2801,12 @@ Respond with ONLY the complete modified file content, no explanations."""
         action = args.get('action', '')
         
         if action == 'init':
-            return await self._git_init(args.get('working_directory', '.'))
+            # Use current project path if set and no explicit working_directory provided
+            if 'working_directory' not in args and self.current_project_path:
+                working_dir = str(self.current_project_path)
+            else:
+                working_dir = args.get('working_directory', '.')
+            return await self._git_init(working_dir)
         elif action == 'list_repos':
             return await self._list_repos()
         elif action == 'create_repo':
@@ -2473,7 +2879,11 @@ Respond with ONLY the complete modified file content, no explanations."""
 
     async def _git_push(self, args: Dict[str, Any]) -> str:
         """Push to GitHub."""
-        working_dir = args.get('working_directory', '.')
+        # Use current project path if set and no explicit working_directory provided
+        if 'working_directory' not in args and self.current_project_path:
+            working_dir = str(self.current_project_path)
+        else:
+            working_dir = args.get('working_directory', '.')
         branch = args.get('branch', 'main')
         commit_message = args.get('commit_message', 'Update files')
         
@@ -2490,7 +2900,11 @@ Respond with ONLY the complete modified file content, no explanations."""
 
     async def _git_pull(self, args: Dict[str, Any]) -> str:
         """Pull from GitHub."""
-        working_dir = args.get('working_directory', '.')
+        # Use current project path if set and no explicit working_directory provided
+        if 'working_directory' not in args and self.current_project_path:
+            working_dir = str(self.current_project_path)
+        else:
+            working_dir = args.get('working_directory', '.')
         branch = args.get('branch', 'main')
         
         result = await self.github.git_pull(working_dir, branch)

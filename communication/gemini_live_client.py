@@ -57,6 +57,12 @@ Be conversational, friendly, and helpful."""
         self._full_response_buffer = []
         self._response_timeout_task = None
         
+        # Freeze detection: track last user input and AI response times
+        self._last_user_input_time = None
+        self._last_ai_response_time = None
+        self._freeze_watchdog_task = None
+        self._freeze_timeout = 15.0  # seconds - if no response for this long, nudge the AI
+        
     def register_function(self, declaration: Dict, handler: Callable):
         """Register a function for the agent to call.
         
@@ -80,6 +86,36 @@ Be conversational, friendly, and helpful."""
         self.function_declarations.append(declaration)
         self.function_handlers[declaration["name"]] = handler
         logger.info(f"Registered function: {declaration['name']}")
+    
+    async def _freeze_watchdog(self):
+        """Watchdog that detects if Gemini freezes and doesn't respond.
+        
+        If no AI response is received within _freeze_timeout seconds after user input,
+        sends a nudge (end_of_turn signal) to prompt the AI to respond.
+        """
+        try:
+            await asyncio.sleep(self._freeze_timeout)
+            
+            # If we get here, the timeout expired without being cancelled
+            logger.warning(f"⚠️  Gemini appears frozen (no response for {self._freeze_timeout}s) - sending nudge")
+            print(f"\n⚠️  TARS hasn't responded in {self._freeze_timeout}s, sending nudge...")
+            
+            try:
+                # Send a minimal text message with end_of_turn=True to nudge Gemini
+                # Gemini requires a non-empty input even with end_of_turn
+                # Use a single space which is minimal and won't be spoken
+                if self.session and self.is_connected:
+                    await self.session.send(
+                        input=" ",  # Single space (minimal valid input)
+                        end_of_turn=True
+                    )
+                    logger.info("Sent end_of_turn nudge to Gemini (minimal text)")
+            except Exception as e:
+                logger.error(f"Failed to send freeze nudge: {e}")
+                
+        except asyncio.CancelledError:
+            # Watchdog was cancelled (normal - AI responded in time)
+            pass
     
     def _build_config(self, permission_level: str = "full") -> types.LiveConnectConfig:
         """Build configuration for Gemini Live session with permission filtering.
@@ -188,6 +224,10 @@ Be conversational, friendly, and helpful."""
         """Disconnect from Gemini Live session."""
         if self._session_context and self.is_connected:
             try:
+                # Cancel freeze watchdog if active
+                if self._freeze_watchdog_task and not self._freeze_watchdog_task.done():
+                    self._freeze_watchdog_task.cancel()
+                
                 # Exit the context manager properly
                 await self._session_context.__aexit__(None, None, None)
                 self.is_connected = False
@@ -358,6 +398,14 @@ Be conversational, friendly, and helpful."""
                             if response.server_content.output_transcription:
                                 text = response.server_content.output_transcription.text
 
+                                # Track AI response time for freeze detection
+                                import time
+                                self._last_ai_response_time = time.time()
+                                
+                                # Cancel freeze watchdog (AI is responding)
+                                if self._freeze_watchdog_task and not self._freeze_watchdog_task.done():
+                                    self._freeze_watchdog_task.cancel()
+
                                 # Add to full response buffer
                                 self._full_response_buffer.append(text)
                                 
@@ -398,6 +446,15 @@ Be conversational, friendly, and helpful."""
                             # User's spoken text
                             if hasattr(response.server_content, 'input_transcription') and response.server_content.input_transcription:
                                 user_text = response.server_content.input_transcription.text
+
+                                # Track user input time for freeze detection
+                                import time
+                                self._last_user_input_time = time.time()
+                                
+                                # Start freeze watchdog (cancel previous one if exists)
+                                if self._freeze_watchdog_task and not self._freeze_watchdog_task.done():
+                                    self._freeze_watchdog_task.cancel()
+                                self._freeze_watchdog_task = asyncio.create_task(self._freeze_watchdog())
 
                                 # Buffer for console output
                                 self._user_console_buffer.append(user_text)

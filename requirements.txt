@@ -8,6 +8,9 @@ twilio==9.9.0
 # Gemini AI with native audio support
 google-genai>=0.2.0
 
+# Claude AI for programming tasks
+anthropic>=0.40.0
+
 # WebSocket support for Twilio Media Streams
 websockets==14.1
 
