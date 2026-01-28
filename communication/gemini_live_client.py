@@ -62,6 +62,7 @@ Be conversational, friendly, and helpful."""
         self._last_ai_response_time = None
         self._freeze_watchdog_task = None
         self._freeze_timeout = 15.0  # seconds - if no response for this long, nudge the AI
+        self._user_speaking = False  # Track if user is currently speaking
         
     def register_function(self, declaration: Dict, handler: Callable):
         """Register a function for the agent to call.
@@ -87,6 +88,26 @@ Be conversational, friendly, and helpful."""
         self.function_handlers[declaration["name"]] = handler
         logger.info(f"Registered function: {declaration['name']}")
     
+    async def _detect_speech_end(self):
+        """Detect when user has stopped speaking (pause in transcription).
+        
+        Waits for a pause in speech, then starts the freeze watchdog.
+        This prevents the watchdog from triggering while the user is still talking.
+        """
+        try:
+            # Wait for a pause in speech (2 seconds without new transcription)
+            await asyncio.sleep(2.0)
+            
+            # Mark user as done speaking
+            self._user_speaking = False
+            
+            # Now start the freeze watchdog (only if AI hasn't already responded)
+            if not self._freeze_watchdog_task or self._freeze_watchdog_task.done():
+                self._freeze_watchdog_task = asyncio.create_task(self._freeze_watchdog())
+                
+        except asyncio.CancelledError:
+            pass
+    
     async def _freeze_watchdog(self):
         """Watchdog that detects if Gemini freezes and doesn't respond.
         
@@ -97,21 +118,23 @@ Be conversational, friendly, and helpful."""
             await asyncio.sleep(self._freeze_timeout)
             
             # If we get here, the timeout expired without being cancelled
-            logger.warning(f"⚠️  Gemini appears frozen (no response for {self._freeze_timeout}s) - sending nudge")
-            print(f"\n⚠️  TARS hasn't responded in {self._freeze_timeout}s, sending nudge...")
-            
-            try:
-                # Send a minimal text message with end_of_turn=True to nudge Gemini
-                # Gemini requires a non-empty input even with end_of_turn
-                # Use a single space which is minimal and won't be spoken
-                if self.session and self.is_connected:
-                    await self.session.send(
-                        input=" ",  # Single space (minimal valid input)
-                        end_of_turn=True
-                    )
-                    logger.info("Sent end_of_turn nudge to Gemini (minimal text)")
-            except Exception as e:
-                logger.error(f"Failed to send freeze nudge: {e}")
+            # Only nudge if user is not currently speaking
+            if not self._user_speaking:
+                logger.warning(f"⚠️  Gemini appears frozen (no response for {self._freeze_timeout}s) - sending nudge")
+                print(f"\n⚠️  TARS hasn't responded in {self._freeze_timeout}s, sending nudge...")
+                
+                try:
+                    # Send a minimal text message with end_of_turn=True to nudge Gemini
+                    # Gemini requires a non-empty input even with end_of_turn
+                    # Use a single space which is minimal and won't be spoken
+                    if self.session and self.is_connected:
+                        await self.session.send(
+                            input=" ",  # Single space (minimal valid input)
+                            end_of_turn=True
+                        )
+                        logger.info("Sent end_of_turn nudge to Gemini (minimal text)")
+                except Exception as e:
+                    logger.error(f"Failed to send freeze nudge: {e}")
                 
         except asyncio.CancelledError:
             # Watchdog was cancelled (normal - AI responded in time)
@@ -450,11 +473,15 @@ Be conversational, friendly, and helpful."""
                                 # Track user input time for freeze detection
                                 import time
                                 self._last_user_input_time = time.time()
+                                self._user_speaking = True
                                 
-                                # Start freeze watchdog (cancel previous one if exists)
+                                # Cancel any existing freeze watchdog while user is speaking
                                 if self._freeze_watchdog_task and not self._freeze_watchdog_task.done():
                                     self._freeze_watchdog_task.cancel()
-                                self._freeze_watchdog_task = asyncio.create_task(self._freeze_watchdog())
+                                
+                                # Start a new task to detect when user stops speaking
+                                # Only start the freeze watchdog after a pause in speech
+                                asyncio.create_task(self._detect_speech_end())
 
                                 # Buffer for console output
                                 self._user_console_buffer.append(user_text)

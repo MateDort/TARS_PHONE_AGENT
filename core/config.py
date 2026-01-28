@@ -68,6 +68,9 @@ class Config:
 
     # KIPP Configuration (N8N backend)
     N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
+    # Fix common .env file issues: remove duplicate variable name if present
+    if N8N_WEBHOOK_URL.startswith("N8N_WEBHOOK_URL="):
+        N8N_WEBHOOK_URL = N8N_WEBHOOK_URL.replace("N8N_WEBHOOK_URL=", "", 1)
     N8N_TARS_WEBHOOK_URL = os.getenv('N8N_TARS_WEBHOOK_URL', '').strip()  # For KIPP to send tasks back to TARS
 
     # TARS Personality Configuration (Dynamically Editable)
@@ -141,6 +144,15 @@ class Config:
     ENABLE_CODE_BACKUPS = os.getenv('ENABLE_CODE_BACKUPS', 'true').lower() == 'true'
     ENABLE_PROGRAMMING_DOCS = os.getenv('ENABLE_PROGRAMMING_DOCS', 'true').lower() == 'true'
     PROGRAMMING_DOCS_DIR = os.getenv('PROGRAMMING_DOCS_DIR', '.tars_docs')
+    
+    # Redis Queue Configuration (for background tasks)
+    REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+    REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+    REDIS_DB = int(os.getenv('REDIS_DB', '0'))
+    
+    # Background Task Settings
+    MAX_TASK_RUNTIME_MINUTES = int(os.getenv('MAX_TASK_RUNTIME_MINUTES', '15'))
+    ENABLE_DETAILED_UPDATES = os.getenv('ENABLE_DETAILED_UPDATES', 'true').lower() == 'true'
 
     @classmethod
     def validate(cls):
@@ -218,5 +230,10 @@ class Config:
         cls.PROJECTS_ROOT = os.getenv('PROJECTS_ROOT', '/Users/matedort/')
         cls.MAX_COMMAND_TIMEOUT = int(os.getenv('MAX_COMMAND_TIMEOUT', '60'))
         cls.ENABLE_CODE_BACKUPS = os.getenv('ENABLE_CODE_BACKUPS', 'true').lower() == 'true'
+        cls.REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+        cls.REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+        cls.REDIS_DB = int(os.getenv('REDIS_DB', '0'))
+        cls.MAX_TASK_RUNTIME_MINUTES = int(os.getenv('MAX_TASK_RUNTIME_MINUTES', '15'))
+        cls.ENABLE_DETAILED_UPDATES = os.getenv('ENABLE_DETAILED_UPDATES', 'true').lower() == 'true'
 
         return True

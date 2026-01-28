@@ -1537,6 +1537,46 @@ class InterSessionAgent(SubAgent):
             return f"Session '{session.session_name}' has been resumed, sir."
         else:
             return f"Failed to resume session '{session_id or session_name}', sir. It may not be suspended or may not exist."
+    
+    async def submit_background_confirmation(self, args: Dict[str, Any]) -> str:
+        """Submit confirmation code for a background task (called from voice).
+        
+        This is automatically called when user provides a confirmation code
+        during a background task confirmation request.
+        
+        Args:
+            args: {
+                "task_id": str - Background task ID
+                "confirmation_code": str - The code provided by user
+            }
+        """
+        task_id = args.get('task_id')
+        code = args.get('confirmation_code')
+        
+        if not task_id or not code:
+            return "Please provide both task ID and confirmation code, sir."
+        
+        try:
+            # Store confirmation in Redis for background worker to pick up
+            from redis import Redis
+            redis_conn = Redis(
+                host=Config.REDIS_HOST,
+                port=Config.REDIS_PORT,
+                db=Config.REDIS_DB
+            )
+            
+            redis_conn.setex(
+                f"task:{task_id}:confirmation",
+                300,  # 5 minute expiry
+                code
+            )
+            
+            logger.info(f"Stored voice confirmation code for task {task_id}")
+            return f"Confirmation code received for task {task_id}, sir. The background task will continue."
+            
+        except Exception as e:
+            logger.error(f"Error storing voice confirmation: {e}")
+            return f"Error processing confirmation code: {str(e)}"
 
 
 class ConversationSearchAgent(SubAgent):
@@ -1837,14 +1877,21 @@ class KIPPAgent(SubAgent):
 class ProgrammerAgent(SubAgent):
     """Handles programming tasks: file operations, terminal commands, code editing, and GitHub operations."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, github_handler=None, session_manager=None):
         super().__init__(
             name="programmer",
             description="Manages programming projects, executes terminal commands, edits code, and handles GitHub operations"
         )
         self.db = db
-        from utils.github_operations import GitHubOperations
-        self.github = GitHubOperations()
+        self.session_manager = session_manager  # For background task access
+        
+        # Initialize GitHub handler
+        if github_handler:
+            self.github = github_handler
+        else:
+            from utils.github_operations import GitHubOperations
+            self.github = GitHubOperations()
+        
         self.current_project_path = None  # Track current project for relative path resolution
         
         # Initialize Claude client for code generation and editing
@@ -2911,6 +2958,187 @@ Respond with ONLY the complete file content, no explanations or markdown code bl
         if result.get('success'):
             return f"Pulled from {branch}: {result.get('message')}, sir."
         return f"Failed to pull: {result.get('error')}, sir."
+    
+    # Background Programming Task Methods
+    
+    async def start_autonomous_coding(self, args: Dict[str, Any]) -> str:
+        """Start a long-running autonomous coding session in background.
+        
+        Args:
+            args: {
+                "goal": str - What to build/fix
+                "project_path": str - Where to work (optional, uses current project)
+                "verbose_updates": bool - Send detailed updates (default: from config)
+            }
+        """
+        goal = args.get('goal', '')
+        project_path = args.get('project_path') or self.current_project_path
+        verbose = args.get('verbose_updates')
+        
+        if not goal:
+            return "Please provide a coding goal, sir."
+        
+        if not project_path:
+            return "Please open or specify a project first, sir."
+        
+        if not self.session_manager or not self.session_manager.task_manager:
+            return "Background task system is not available, sir. Please ensure Redis is running."
+        
+        # Start background task
+        try:
+            task_id = self.session_manager.task_manager.start_programming_task(
+                goal=goal,
+                project_path=str(project_path),
+                session_id=args.get('session_id', 'unknown'),
+                verbose_updates=verbose
+            )
+            
+            # Send initial Discord notification
+            await self._send_discord_update({
+                'task_id': task_id,
+                'type': 'task_started',
+                'goal': goal,
+                'project': str(project_path),
+                'message': f"🚀 Started background task #{task_id}: {goal}"
+            })
+            
+            return (
+                f"Started autonomous coding task #{task_id} in background, sir.\n"
+                f"Goal: {goal}\n"
+                f"Project: {project_path}\n"
+                f"I'll send updates to Discord and you can check progress anytime."
+            )
+        except Exception as e:
+            logger.error(f"Error starting background task: {e}")
+            return f"Error starting background task: {str(e)}, sir."
+    
+    async def check_coding_progress(self, args: Dict[str, Any]) -> str:
+        """Check status of background coding task.
+        
+        Args:
+            args: {
+                "task_id": str (optional - checks latest if not provided)
+            }
+        """
+        if not self.session_manager or not self.session_manager.task_manager:
+            return "Background task system is not available, sir."
+        
+        task_id = args.get('task_id')
+        
+        if not task_id:
+            # Get latest task
+            tasks = self.session_manager.task_manager.tasks
+            if not tasks:
+                return "No background tasks running, sir."
+            task_id = list(tasks.keys())[-1]
+        
+        try:
+            status = self.session_manager.task_manager.get_task_status(task_id)
+            
+            if 'error' in status:
+                return f"{status['error']}"
+            
+            status_msg = (
+                f"Task #{task_id}: {status['status']}\n"
+                f"Goal: {status['goal']}\n"
+                f"Progress: {status['progress']}\n"
+                f"Current Phase: {status['current_phase']}"
+            )
+            
+            if status.get('awaiting_confirmation'):
+                status_msg += f"\n⚠️ Waiting for confirmation code for command: {status.get('confirmation_command')}"
+            
+            return status_msg
+        except Exception as e:
+            logger.error(f"Error checking task progress: {e}")
+            return f"Error checking task progress: {str(e)}, sir."
+    
+    async def cancel_coding_task(self, args: Dict[str, Any]) -> str:
+        """Cancel a background coding task.
+        
+        Args:
+            args: {
+                "task_id": str - Task ID to cancel
+            }
+        """
+        if not self.session_manager or not self.session_manager.task_manager:
+            return "Background task system is not available, sir."
+        
+        task_id = args.get('task_id')
+        
+        if not task_id:
+            return "Please provide task ID to cancel, sir."
+        
+        try:
+            result = self.session_manager.task_manager.cancel_task(task_id)
+            
+            # Send Discord notification
+            await self._send_discord_update({
+                'task_id': task_id,
+                'type': 'task_cancelled',
+                'message': f"🛑 Task #{task_id} cancelled"
+            })
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error cancelling task: {e}")
+            return f"Error cancelling task: {str(e)}, sir."
+    
+    async def _send_discord_update(self, data: dict):
+        """Send update to Discord via KIPP (N8N webhook).
+        
+        Args:
+            data: {
+                'task_id': str,
+                'type': str (task_started|progress|phase_complete|confirmation_request|task_complete|error),
+                'message': str,
+                'command': str (optional - for terminal commands),
+                'phase': str (optional - for phase completions),
+                'code_request': bool (optional - if confirmation needed)
+            }
+        """
+        webhook_url = Config.N8N_WEBHOOK_URL
+        
+        if not webhook_url:
+            logger.warning("N8N webhook not configured for Discord updates")
+            return
+        
+        # Format payload for KIPP/N8N to route to Discord
+        payload = {
+            "target": "discord",  # Tell KIPP to route to Discord
+            "source": "background_task",  # Identify as background task update
+            "task_id": data.get('task_id'),
+            "type": data.get('type'),
+            "message": data.get('message'),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Add optional fields
+        if 'command' in data:
+            payload['command'] = data['command']
+        if 'phase' in data:
+            payload['phase'] = data['phase']
+        if 'code_request' in data:
+            payload['awaiting_confirmation'] = True
+        if 'goal' in data:
+            payload['goal'] = data['goal']
+        if 'project' in data:
+            payload['project'] = data['project']
+        
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Sent Discord update via KIPP: {data.get('message', '')[:50]}")
+                    else:
+                        logger.warning(f"KIPP webhook returned {response.status}")
+        except Exception as e:
+            logger.error(f"Failed to send Discord update via KIPP: {e}")
 
 
 # Agent registry
@@ -2949,8 +3177,8 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     # Add KIPP agent for all communication tasks
     agents["kipp"] = KIPPAgent()
 
-    # Add programmer agent
-    agents["programmer"] = ProgrammerAgent(db)
+    # Add programmer agent (with session_manager for background tasks)
+    agents["programmer"] = ProgrammerAgent(db=db, github_handler=None, session_manager=session_manager)
 
     return agents
 
@@ -3523,6 +3751,73 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action"]
+            }
+        },
+        {
+            "name": "start_autonomous_coding",
+            "description": "Start a long-running autonomous coding task in background (up to 15 min). TARS will work on it while you do other things. Updates sent to Discord. The task will iterate through code/test/fix loops using Claude until complete or timeout.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "goal": {
+                        "type": "STRING",
+                        "description": "What to build/fix (e.g., 'Create a calculator app with tests', 'Fix the login bug', 'Add dark mode to the website')"
+                    },
+                    "project_path": {
+                        "type": "STRING",
+                        "description": "Project path (optional, uses current project if not specified)"
+                    },
+                    "verbose_updates": {
+                        "type": "BOOLEAN",
+                        "description": "Send detailed updates for every action (default: from config)"
+                    }
+                },
+                "required": ["goal"]
+            }
+        },
+        {
+            "name": "check_coding_progress",
+            "description": "Check status of background coding task. Shows current phase, progress, and if waiting for confirmation.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "task_id": {
+                        "type": "STRING",
+                        "description": "Task ID (optional - checks latest task if not provided)"
+                    }
+                }
+            }
+        },
+        {
+            "name": "cancel_coding_task",
+            "description": "Cancel a running background coding task",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "task_id": {
+                        "type": "STRING",
+                        "description": "Task ID to cancel"
+                    }
+                },
+                "required": ["task_id"]
+            }
+        },
+        {
+            "name": "submit_background_confirmation",
+            "description": "Submit confirmation code for a background programming task (internal use - called automatically when user provides confirmation code)",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "task_id": {
+                        "type": "STRING",
+                        "description": "Background task ID"
+                    },
+                    "confirmation_code": {
+                        "type": "STRING",
+                        "description": "Confirmation code provided by user"
+                    }
+                },
+                "required": ["task_id", "confirmation_code"]
             }
         }
     ]

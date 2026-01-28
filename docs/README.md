@@ -566,6 +566,68 @@ N8N → TARS Communication
    python main_tars.py
    ```
 
+### Background Workers (Optional - For Autonomous Programming)
+
+For autonomous programming tasks that can run for 10-15 minutes in the background, you'll need Redis and a worker process:
+
+1. **Install Redis**:
+   ```bash
+   # macOS
+   brew install redis
+   brew services start redis
+   
+   # Ubuntu/Debian
+   sudo apt install redis-server
+   sudo systemctl start redis
+   
+   # Verify Redis is running
+   redis-cli ping  # Should respond with "PONG"
+   ```
+
+2. **Configure background tasks in `.env`**:
+   ```env
+   # Redis Configuration
+   REDIS_HOST=localhost
+   REDIS_PORT=6379
+   REDIS_DB=0
+   
+   # Background Task Settings
+   MAX_TASK_RUNTIME_MINUTES=15
+   ENABLE_DETAILED_UPDATES=true  # Send detailed updates for every action
+   
+   # Discord Updates (N8N webhook for background task progress)
+   # Discord updates route through main N8N_WEBHOOK_URL (KIPP)
+   ```
+
+3. **Start the background worker** (in a separate terminal):
+   ```bash
+   python3 start_worker.py
+   ```
+   
+   You should see:
+   ```
+   ============================================================
+     TARS BACKGROUND WORKER
+     Autonomous Programming Task Processor
+   ============================================================
+   
+   Configuration:
+     Redis: localhost:6379 (DB 0)
+     Max task runtime: 15 minutes
+     Queue: tars_programming
+   
+   🚀 Starting worker...
+   ```
+
+4. **Run TARS** (in your main terminal):
+   ```bash
+   python3 main_tars.py
+   ```
+
+The worker will process autonomous coding tasks in the background while TARS remains responsive to other requests. See [BACKGROUND_PROGRAMMING.md](BACKGROUND_PROGRAMMING.md) for detailed usage.
+
+**Note**: If you don't need autonomous programming features, you can skip the Redis/worker setup. All other TARS features work without it.
+
 ---
 
 ## ⚙️ Configuration

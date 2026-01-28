@@ -190,11 +190,16 @@ class TARSPhoneAgent:
             "get_session_info": agents.get("inter_session"),
             "suspend_session": agents.get("inter_session"),
             "resume_session": agents.get("inter_session"),
+            "submit_background_confirmation": agents.get("inter_session"),
             # Programmer agent functions
             "manage_project": agents.get("programmer"),
             "execute_terminal": agents.get("programmer"),
             "edit_code": agents.get("programmer"),
             "github_operation": agents.get("programmer"),
+            # Background programming task functions
+            "start_autonomous_coding": agents.get("programmer"),
+            "check_coding_progress": agents.get("programmer"),
+            "cancel_coding_task": agents.get("programmer"),
         }
 
         for declaration in declarations:
@@ -208,14 +213,35 @@ class TARSPhoneAgent:
                         f"Skipping function {fn_name} - agent not available")
                     continue
 
-                # Create wrapper handler
-                def make_handler(agent_instance):
-                    async def handler(args):
-                        return await agent_instance.execute(args)
-                    return handler
+                # Create wrapper handler based on function name
+                # Background programming task functions call methods directly
+                if fn_name == "start_autonomous_coding":
+                    def make_start_coding_handler(agent_inst):
+                        async def handler(args):
+                            return await agent_inst.start_autonomous_coding(args)
+                        return handler
+                    handler = make_start_coding_handler(agent)
+                elif fn_name == "check_coding_progress":
+                    def make_check_progress_handler(agent_inst):
+                        async def handler(args):
+                            return await agent_inst.check_coding_progress(args)
+                        return handler
+                    handler = make_check_progress_handler(agent)
+                elif fn_name == "cancel_coding_task":
+                    def make_cancel_task_handler(agent_inst):
+                        async def handler(args):
+                            return await agent_inst.cancel_coding_task(args)
+                        return handler
+                    handler = make_cancel_task_handler(agent)
+                else:
+                    # Default: route through execute() method
+                    def make_handler(agent_instance):
+                        async def handler(args):
+                            return await agent_instance.execute(args)
+                        return handler
+                    handler = make_handler(agent)
 
                 # Register with Gemini client
-                handler = make_handler(agent)
                 self.gemini_client.register_function(declaration, handler)
                 logger.info(f"Registered function: {fn_name} -> {agent.name}")
             elif fn_name == "get_current_time":

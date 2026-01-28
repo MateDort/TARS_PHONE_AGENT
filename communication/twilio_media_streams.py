@@ -337,6 +337,61 @@ class TwilioMediaStreamsHandler:
 
             # Return empty response
             return Response('', status=200)
+        
+        @self.app.route('/webhook/background-confirmation', methods=['POST'])
+        def background_confirmation_webhook():
+            """Receive confirmation code from Discord via N8N.
+            
+            This handles confirmation codes sent via Discord. Voice confirmations
+            are handled directly by submit_background_confirmation function.
+            
+            Expected payload from N8N:
+            {
+                "task_id": "abc123",
+                "confirmation_code": "6283"
+            }
+            """
+            import json
+            try:
+                data = request.get_json()
+                task_id = data.get('task_id')
+                code = data.get('confirmation_code')
+                
+                if not task_id or not code:
+                    logger.warning("Background confirmation webhook: missing task_id or code")
+                    return Response(
+                        json.dumps({'error': 'Missing task_id or confirmation_code'}),
+                        status=400,
+                        mimetype='application/json'
+                    )
+                
+                # Store confirmation in Redis (same key as voice confirmations)
+                from redis import Redis
+                redis_conn = Redis(
+                    host=Config.REDIS_HOST,
+                    port=Config.REDIS_PORT,
+                    db=Config.REDIS_DB
+                )
+                redis_conn.setex(
+                    f"task:{task_id}:confirmation",
+                    300,  # 5 minute expiry
+                    code
+                )
+                
+                logger.info(f"Received Discord confirmation code for task {task_id}")
+                return Response(
+                    json.dumps({'status': 'ok', 'message': 'Confirmation received'}),
+                    status=200,
+                    mimetype='application/json'
+                )
+                
+            except Exception as e:
+                logger.error(f"Error handling Discord confirmation: {e}")
+                return Response(
+                    json.dumps({'error': str(e)}),
+                    status=500,
+                    mimetype='application/json'
+                )
 
     async def handle_media_stream(self, websocket):
         """Handle WebSocket connection from Twilio Media Streams - now creates session via SessionManager.

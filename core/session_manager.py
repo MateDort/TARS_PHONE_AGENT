@@ -52,6 +52,15 @@ class SessionManager:
 
         # Thread-safe lock for concurrent access
         self._lock = asyncio.Lock()
+        
+        # Background task manager for autonomous programming
+        try:
+            from core.task_manager import BackgroundTaskManager
+            self.task_manager = BackgroundTaskManager()
+            logger.info("Background task manager initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize background task manager: {e}")
+            self.task_manager = None
 
         logger.info("SessionManager initialized")
 
@@ -709,6 +718,66 @@ class SessionManager:
             session for session in self.sessions.values()
             if session.is_active()
         ]
+    
+    async def get_active_user_session(self) -> Optional[AgentSession]:
+        """Get the active session for the main user (Máté).
+        
+        Returns the session if user is currently in a call, None otherwise.
+        Used by background tasks to send voice confirmation requests.
+        """
+        active_sessions = await self.get_active_sessions()
+        
+        for session in active_sessions:
+            # Check if session has full access and is a user session (not goal/outbound agent)
+            if session.has_full_access() and session.session_type.value in ['inbound_user', 'outbound_user']:
+                return session
+        
+        return None
+    
+    async def send_message_to_session(self, session_id: str, message: str, interrupt: bool = False):
+        """Send a message to a specific session via Gemini Live.
+        
+        Args:
+            session_id: Target session ID
+            message: Message to send
+            interrupt: If True, interrupt current conversation (for urgent messages like confirmations)
+        """
+        session = await self.get_session(session_id)
+        if not session or not session.client:
+            logger.warning(f"Cannot send message to session {session_id}: session or client not found")
+            return
+        
+        try:
+            # Send message through Gemini Live client
+            # Note: Gemini Live doesn't have a direct "interrupt" mechanism
+            # but we can send the message which will be spoken
+            if hasattr(session.client, 'session') and session.client.session:
+                await session.client.session.send(
+                    input=message,
+                    end_of_turn=True
+                )
+                logger.info(f"Sent message to session {session_id}: {message[:50]}...")
+            else:
+                logger.warning(f"Session {session_id} client has no active Gemini session")
+        except Exception as e:
+            logger.error(f"Error sending message to session {session_id}: {e}")
+    
+    def get_pending_confirmations(self) -> List[str]:
+        """Get list of task IDs waiting for confirmation codes.
+        
+        Used to update system instructions so Gemini knows to watch for codes.
+        
+        Returns:
+            List of task IDs awaiting confirmation
+        """
+        if not self.task_manager:
+            return []
+        
+        try:
+            return self.task_manager.get_tasks_awaiting_confirmation()
+        except Exception as e:
+            logger.error(f"Error getting pending confirmations: {e}")
+            return []
 
     async def get_active_session_count(self) -> int:
         """Get count of currently active sessions.
