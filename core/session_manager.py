@@ -193,55 +193,60 @@ class SessionManager:
 
     async def create_message_session(
         self,
-        phone_number: str = None,
-        email_address: str = None
+        identifier: str,
+        platform: str = 'sms',  # sms, whatsapp, email, telegram, discord
+        user_name: Optional[str] = None
     ) -> AgentSession:
-        """Create a new agent session for messages/emails (no websocket).
-
-        This creates a live Gemini session for text-based communication from messages or emails.
-        The session will timeout after MESSAGE_SESSION_TIMEOUT seconds of inactivity.
+        """Create or retrieve a live session for text-based communication.
 
         Args:
-            phone_number: Phone number (for SMS/WhatsApp messages)
-            email_address: Email address (for email messages)
+            identifier: Unique ID (phone number, email, telegram_id, etc.)
+            platform: Platform name
+            user_name: Optional user name for context
 
         Returns:
-            Created AgentSession instance
+            AgentSession instance
         """
         async with self._lock:
-            # Determine the identifier (phone or email)
-            identifier = phone_number or email_address
-            if not identifier:
-                raise ValueError("Either phone_number or email_address must be provided")
+            # Check for existing active session for this identifier
+            if identifier in self.phone_to_sessions:
+                for sid in reversed(self.phone_to_sessions[identifier]):
+                    session = self.sessions.get(sid)
+                    if session and session.is_active():
+                        # Update activity
+                        if hasattr(session, 'update_activity'):
+                            session.update_activity()
+                        logger.info(f"Reusing existing session {sid[:8]} for {identifier}")
+                        return session
+
+            # Authenticate / Determine Permissions
+            # For Telegram/Discord, we trust them if they are in the allowed list or if config allows
+            permission_level = PermissionLevel.LIMITED
             
-            # Authenticate to determine permission level
-            permission_level = authenticate_phone_number(identifier) if phone_number else PermissionLevel.FULL
+            # Check if it's the admin/owner (from Config)
+            if platform == 'telegram' and str(identifier) == str(Config.TELEGRAM_MATE_CHAT_ID):
+                permission_level = PermissionLevel.FULL
+            elif platform == 'discord' and str(identifier) == str(Config.DISCORD_CHANNEL_ID): # Heuristic
+                 permission_level = PermissionLevel.FULL
+            elif platform in ['sms', 'whatsapp'] and identifier == Config.TARGET_PHONE_NUMBER:
+                 permission_level = PermissionLevel.FULL
+            elif platform == 'email' and identifier == Config.TARGET_EMAIL:
+                 permission_level = PermissionLevel.FULL
             
-            # Check if there's already an active Máté main session
-            if permission_level == PermissionLevel.FULL:
-                mate_main = await self.get_mate_main_session()
-                if mate_main and mate_main.is_active():
-                    # Update activity and return existing session
-                    if hasattr(mate_main, 'update_activity'):
-                        mate_main.update_activity()
-                    return mate_main
+            # Allow full permissions for now if debugging/experimental (optional tweak)
+            # permission_level = PermissionLevel.FULL 
 
             # Generate unique session ID
             session_id = generate_session_id()
             
-            # Determine session name - use "Call with Máté (main)" for consistency with phone calls
-            session_name = "Call with Máté (main)"
-            mate_main = await self.get_mate_main_session()
-            if mate_main and mate_main.is_active():
-                # Already has main session - this is a secondary one
-                import uuid
-                suffix = uuid.uuid4().hex[:4]
-                session_name = f"Call with Máté ({suffix})"
-            
-            # Create GeminiLiveClient with filtered functions
+            session_name = f"Chat with {user_name or identifier} ({platform})"
+            if permission_level == PermissionLevel.FULL:
+                 session_name = "Chat with Máté (Text)"
+
+            # Create GeminiLiveClient
             gemini_client = await self._create_gemini_client(permission_level)
             
-            # Set up response handler for message sessions
+            # Set up response handler
             # Buffer responses to send complete messages
             response_buffer = []
             response_timeout_task = None
@@ -250,34 +255,41 @@ class SessionManager:
                 """Handle text response from Gemini and send back via appropriate medium."""
                 nonlocal response_timeout_task, response_buffer
                 try:
-                    # Buffer the response text
                     response_buffer.append(text)
                     
-                    # Cancel any existing timeout task
                     if response_timeout_task and not response_timeout_task.done():
                         response_timeout_task.cancel()
                     
-                    # Set a timeout to send the response if no more text comes
                     async def send_buffered_response():
                         try:
-                            await asyncio.sleep(1.5)  # Wait 1.5 seconds for more text
+                            await asyncio.sleep(1.0)  # Wait 1s for more text
                             if response_buffer:
-                                full_response = ''.join(response_buffer)
+                                full_response = ''.join(response_buffer).strip()
                                 response_buffer.clear()
-                                
-                                # Determine medium based on identifier - route through KIPP
-                                from sub_agents_tars import KIPPAgent
-                                n8n_agent = KIPPAgent()
-                                if email_address:
-                                    n8n_message = f"Send email to {email_address} with subject 'TARS Reply' and body '{full_response}'"
-                                elif phone_number:
-                                    n8n_message = f"Send SMS to {phone_number}: {full_response}"
+                                if not full_response: return
+
+                                # ROUTING LOGIC
+                                if platform in ['telegram', 'discord']:
+                                    from core.event_bus import event_bus
+                                    await event_bus.publish('notification.send', {
+                                        'platform': platform,
+                                        'chat_id': identifier, # identifier IS the chat_id for TG/Discord
+                                        'message': full_response
+                                    })
                                 else:
-                                    n8n_message = f"Send message: {full_response}"
-                                await n8n_agent.execute({"message": n8n_message})
+                                    # SMS/Email -> N8N
+                                    from sub_agents_tars import KIPPAgent
+                                    n8n_agent = KIPPAgent()
+                                    if platform == 'email':
+                                        n8n_message = f"Send email to {identifier}: {full_response}"
+                                    else: # sms, whatsapp
+                                        n8n_message = f"Send SMS/WhatsApp to {identifier}: {full_response}"
+                                    await n8n_agent.execute({"message": n8n_message})
+                                    
                         except asyncio.CancelledError:
-                            # Task was cancelled, ignore
                             pass
+                        except Exception as e:
+                            logger.error(f"Error sending buffered response: {e}")
                     
                     response_timeout_task = asyncio.create_task(send_buffered_response())
                 except Exception as e:
@@ -285,55 +297,42 @@ class SessionManager:
             
             gemini_client.on_text_response = handle_text_response
             
-            # Connect to Gemini Live (text-based, no audio)
+            # Connect to Gemini Live (text mode)
             await gemini_client.connect(permission_level=permission_level.value)
             
-            # Create session object (no websocket for message sessions)
+            # Create session object
             session = AgentSession(
                 session_id=session_id,
-                call_sid=f"msg_{session_id}",  # Fake call_sid for message sessions
+                call_sid=f"{platform}_{session_id}", 
                 session_name=session_name,
-                phone_number=phone_number or email_address,
+                phone_number=identifier, # Storing identifier as "phone_number" for consistency
                 permission_level=permission_level,
                 session_type=SessionType.INBOUND_USER if permission_level == PermissionLevel.FULL else SessionType.INBOUND_UNKNOWN,
                 gemini_client=gemini_client,
-                websocket=None,  # No websocket for message sessions
-                stream_sid=f"stream_{session_id}",  # Fake stream_sid
+                websocket=None, 
+                stream_sid=f"stream_{session_id}",
                 purpose=None,
                 parent_session_id=None
             )
             
-            # Mark as message session and activate
-            session.platform = 'message'
+            session.platform = platform
             session.last_activity_at = datetime.now()
-            session.activate()  # Mark as active
+            session.activate()
             
-            # Register session
             self.sessions[session_id] = session
-            
-            # Track by identifier
             if identifier not in self.phone_to_sessions:
                 self.phone_to_sessions[identifier] = []
             self.phone_to_sessions[identifier].append(session_id)
             
-            # Persist to database
             self.db.add_agent_session(session.to_dict())
             
-            # Register with router
             if self.router:
                 await self.router.register_session(session)
             
-            # Inject session context
             self._inject_session_context(session)
-            
-            # Start timeout task
             asyncio.create_task(self._monitor_message_session_timeout(session))
             
-            logger.info(
-                f"Created message session {session_id[:8]}: {session_name} "
-                f"({permission_level.value})"
-            )
-            
+            logger.info(f"Created/Retrieved text session {session_id[:8]} for {identifier} ({platform})")
             return session
 
     async def create_n8n_session(self, task_message: str) -> AgentSession:

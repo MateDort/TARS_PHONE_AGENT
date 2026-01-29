@@ -573,15 +573,16 @@ Be conversational, friendly, and helpful."""
     
     # Functions that can be routed to background based on TaskRouter decision
     # These use Redis Queue workers and count towards MAX_BACKGROUND_TASKS limit
+    # Functions that can be routed to background based on TaskRouter decision
+    # These use Redis Queue workers and count towards MAX_BACKGROUND_TASKS limit
     BACKGROUND_ELIGIBLE_FUNCTIONS = {
         "deep_research",            # Research tasks
         "manage_project",           # Project management
         "edit_code",                # Code editing
         "execute_terminal",         # Terminal commands (long-running)
         "github_operation",         # Git operations
-        "browse_web",               # Web browsing tasks
         "use_claude_code",          # Claude Code tasks (main programming method)
-        "computer_control",         # Computer control tasks
+        # "computer_control",       # Removed: Needs to run locally on host for Spotify etc.
     }
     
     # Functions that should ALWAYS run in foreground (instant responses)
@@ -598,6 +599,7 @@ Be conversational, friendly, and helpful."""
         "hangup_call",
         "make_goal_call",  # Triggers Twilio call (separate session, not a worker)
         "send_to_n8n",     # KIPP messages are fast
+        "computer_control", # Moved to foreground for local control
         # Claude Code session management (quick status checks)
         "list_claude_sessions",
         "get_claude_session_status",
@@ -653,8 +655,8 @@ Be conversational, friendly, and helpful."""
             # Smart routing: Check if this function should run in background
             should_background = False
             
-            # Computer Control and Web Browse should almost ALWAYS be background tasks
-            if fn_name in ["computer_control", "browse_web"]:
+            # Web Browse still background
+            if fn_name in ["browse_web"]:
                 logger.info(f"TaskRouter: Forcing {fn_name} to BACKGROUND priority")
                 should_background = True
             

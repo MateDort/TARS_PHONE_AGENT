@@ -32,6 +32,9 @@ TARS_SYSTEM_INSTRUCTION = f"""You are TARS, Máté Dort's personal assistant. Yo
 
 {TARS_INFO}
 
+## Memory Core (The Soul)
+{{memory_core}}
+
 ## Personality Settings
 Current time: {{current_time}}
 Current date: {{current_date}}

@@ -12,6 +12,7 @@ from rq import get_current_job
 import anthropic
 
 from core.config import Config
+from core.event_bus import event_bus
 from core.security import verify_confirmation_code
 
 logger = logging.getLogger(__name__)
@@ -308,11 +309,12 @@ class TaskProgressTracker:
             logger.error(f"Failed to send research to Gmail via KIPP: {e}")
 
 
+from core.event_bus import event_bus
+
 async def send_programming_log(data: dict):
-    """Send PROGRAMMING LOG to Discord ONLY via KIPP.
+    """Send PROGRAMMING LOG to Discord via EventBus.
     
-    Programming task logs always go to Discord, never Telegram.
-    This ensures clean separation: logs to Discord, confirmations to Telegram.
+    Publishes to 'log.discord' channel which ManagerAgent/DiscordClient listens to.
     
     Args:
         data: {
@@ -323,108 +325,50 @@ async def send_programming_log(data: dict):
             'phase': str (optional)
         }
     """
-    webhook_url = Config.N8N_WEBHOOK_URL
+    # Publish to Redis channel 'log.discord'
+    # The DiscordClient in the main process will pick this up
+    await event_bus.publish('log.discord', data)
     
-    if not webhook_url:
-        logger.warning("N8N webhook not configured for updates")
-        return
-    
-    # Programming logs ALWAYS go to Discord
-    payload = {
-        "target": "discord",  # ALWAYS Discord for programming logs
-        "routing_instruction": "send_via_discord",  # Explicit instruction for KIPP
-        "message_type": "programming_log",  # This is a programming log
-        "source": "background_task",
-        "task_id": data.get('task_id'),
-        "type": data.get('type'),
-        "message": data.get('message'),
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    if 'command' in data:
-        payload['command'] = data['command']
-    if 'phase' in data:
-        payload['phase'] = data['phase']
-    if 'goal' in data:
-        payload['goal'] = data['goal']
-    if 'project' in data:
-        payload['project'] = data['project']
-    
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                webhook_url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                if response.status == 200:
-                    logger.debug(f"Sent programming log to Discord: {data.get('message', '')[:50]}")
-                else:
-                    logger.warning(f"KIPP webhook returned {response.status}")
-    except Exception as e:
-        logger.error(f"Failed to send programming log via KIPP: {e}")
+    # Also log locally
+    logger.debug(f"Published log to Discord: {data.get('message', '')[:50]}")
 
 
 async def send_log_update(data: dict):
-    """Send LOG/STATUS update via KIPP to configured channel (Discord or Telegram).
+    """Send LOG/STATUS update via EventBus or KIPP.
     
     Uses Config.LOG_CHANNEL to determine where logs go.
-    For confirmations/questions that need user response, use send_confirmation_request().
     
     Args:
         data: {
             'task_id': str,
-            'type': str (task_started|progress|phase_complete|task_complete|error),
+            'type': str,
             'message': str,
             'command': str (optional),
             'phase': str (optional)
         }
     """
-    webhook_url = Config.N8N_WEBHOOK_URL
-    
-    if not webhook_url:
-        logger.warning("N8N webhook not configured for updates")
-        return
-    
-    # Use configured log channel (default: discord)
     log_channel = Config.LOG_CHANNEL.lower()
     
-    # Format payload for KIPP/N8N
-    payload = {
-        "target": log_channel,  # KIPP routes based on this
-        "routing_instruction": f"send_via_{log_channel}",  # Clear instruction for KIPP
-        "message_type": "log",  # This is a log message, not a confirmation
-        "source": "background_task",
-        "task_id": data.get('task_id'),
-        "type": data.get('type'),
-        "message": data.get('message'),
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    if 'command' in data:
-        payload['command'] = data['command']
-    if 'phase' in data:
-        payload['phase'] = data['phase']
-    if 'goal' in data:
-        payload['goal'] = data['goal']
-    if 'project' in data:
-        payload['project'] = data['project']
-    
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                webhook_url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                if response.status == 200:
-                    logger.info(f"Sent log to {log_channel} via KIPP: {data.get('message', '')[:50]}")
-                else:
-                    logger.warning(f"KIPP webhook returned {response.status}")
-    except Exception as e:
-        logger.error(f"Failed to send log update via KIPP: {e}")
+    if log_channel == 'discord':
+        # Use the efficient EventBus pathway for Discord
+        await event_bus.publish('log.discord', data)
+        # Also log locally
+        logger.info(f"Published log to Discord via EventBus: {data.get('message', '')[:50]}")
+    else:
+        # For Telegram logging, we still fall back to KIPP for now
+        # OR use notification.send if TelegramClient is listening?
+        # TelegramClient doesn't listen to generic logs, so we'll use notification.send
+        # But notification.send only takes 'message'.
+        # We'll construct a formatted message.
+        
+        message = data.get('message', '')
+        if data.get('command'):
+            message += f"\nCommand: {data.get('command')}"
+            
+        await event_bus.publish('notification.send', {
+            'platform': 'telegram', # Routing hint
+            'message': f"📝 Log ({data.get('task_id')}): {message}"
+        })
 
 
 # Alias for backward compatibility
@@ -432,67 +376,21 @@ send_discord_update = send_log_update
 
 
 async def send_confirmation_request(data: dict):
-    """Send CONFIRMATION REQUEST via KIPP to configured channel (Discord or Telegram).
-    
-    Uses Config.CONFIRMATION_CHANNEL to determine where confirmations go.
-    This is for confirmations, questions, and plan approvals that need user response.
-    
-    Args:
-        data: {
-            'task_id': str,
-            'type': str (confirmation_request|user_question|plan_approval_request),
-            'message': str,
-            'command': str (optional),
-            'options': list (optional),
-            'reason': str (optional)
-        }
-    """
-    webhook_url = Config.N8N_WEBHOOK_URL
-    
-    if not webhook_url:
-        logger.warning("N8N webhook not configured for confirmations")
-        return
-    
+    """Send CONFIRMATION REQUEST via EventBus (Telegram)."""
     # Use configured confirmation channel (default: telegram)
     confirm_channel = Config.CONFIRMATION_CHANNEL.lower()
     
-    # Format payload for KIPP/N8N
-    payload = {
-        "target": confirm_channel,  # KIPP routes based on this
-        "routing_instruction": f"send_via_{confirm_channel}",  # Clear instruction for KIPP
-        "message_type": "confirmation",  # This needs user response
-        "source": "background_task",
-        "task_id": data.get('task_id'),
-        "type": data.get('type'),
-        "message": data.get('message'),
-        "awaiting_response": True,  # KIPP knows to expect a reply
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    if 'command' in data:
-        payload['command'] = data['command']
-    if 'options' in data:
-        payload['options'] = data['options']
-    if 'reason' in data:
-        payload['reason'] = data['reason']
-    if 'plan' in data:
-        payload['plan'] = data['plan']
-    
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                webhook_url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                if response.status == 200:
-                    logger.info(f"Sent confirmation to {confirm_channel} via KIPP: {data.get('message', '')[:50]}")
-                else:
-                    logger.warning(f"KIPP webhook returned {response.status}")
-    except Exception as e:
-        logger.error(f"Failed to send confirmation via KIPP: {e}")
-
+    message_text = data.get('message', '')
+    if data.get('command'):
+        message_text += f"\nCommand: {data.get('command')}"
+    if data.get('reason'):
+        message_text += f"\nReason: {data.get('reason')}"
+        
+    await event_bus.publish('notification.send', {
+        'platform': confirm_channel,
+        'channel_id': Config.TELEGRAM_MATE_CHAT_ID, # Ensure it goes to owner
+        'message': message_text
+    })
 
 # Alias for backward compatibility
 send_telegram_confirmation = send_confirmation_request
@@ -891,6 +789,13 @@ async def run_claude_code(
     tracker = TaskProgressTracker(task_id, discord_updates=True)
     
     try:
+        # Notify Telegram of start
+        await event_bus.publish('notification.send', {
+            'platform': 'telegram',
+            'channel_id': Config.TELEGRAM_MATE_CHAT_ID,
+            'message': f"🤖 *Started Programming Task*\nGoal: {goal[:100]}...\nProject: `{project_path}`"
+        })
+
         await tracker.send_update(
             f"🤖 Starting Claude Code Session\n**Project:** {project_path}\n**Goal:** {goal[:200]}",
             phase="claude_start"
@@ -940,6 +845,13 @@ async def run_claude_code(
                     phase="claude_complete"
                 )
                 
+                # Notify Telegram of success
+                await event_bus.publish('notification.send', {
+                    'platform': 'telegram',
+                    'channel_id': Config.TELEGRAM_MATE_CHAT_ID,
+                    'message': f"✅ *Programming Task Complete*\n\nResult:\n{output[:500]}..."
+                })
+                
                 logger.info(f"Claude Code task {task_id} completed successfully")
                 return {"status": "completed", "output": output}
             else:
@@ -948,6 +860,13 @@ async def run_claude_code(
                     f"❌ Claude Code Failed\n\n**Error:**\n```\n{error[:1000]}\n```",
                     phase="claude_error"
                 )
+                
+                # Notify Telegram of failure
+                await event_bus.publish('notification.send', {
+                    'platform': 'telegram',
+                    'channel_id': Config.TELEGRAM_MATE_CHAT_ID,
+                    'message': f"❌ *Programming Task Failed*\n\nError:\n{error[:500]}"
+                })
                 
                 logger.error(f"Claude Code task {task_id} failed: {error[:200]}")
                 return {"status": "failed", "error": error}
@@ -967,5 +886,86 @@ async def run_claude_code(
         await tracker.send_update(
             f"❌ Claude Code failed: {str(e)}",
             phase="claude_error"
+        )
+        raise
+
+
+async def run_computer_control(
+    task_id: str,
+    goal: str,
+    session_id: str,
+    timeout_minutes: int = 15
+):
+    """Run a Computer Control task in the background.
+    
+    This is called by RQ when a computer control task is queued.
+    Uses the DockerSandbox for safe execution.
+    
+    Args:
+        task_id: Unique task identifier
+        goal: Task description
+        session_id: TARS session that started this
+        timeout_minutes: Timeout for the task
+    """
+    from agents.programming.docker_sandbox import DockerSandbox
+    
+    logger.info(f"Starting Computer Control task {task_id}: {goal[:50]}...")
+    
+    # Create tracker for updates
+    tracker = TaskProgressTracker(task_id, discord_updates=True)
+    
+    try:
+        await tracker.send_update(
+            f"🖥️ Starting Virtual Computer\\n**Goal:** {goal[:200]}",
+            phase="docker_start"
+        )
+        
+        # Initialize Sandbox
+        sandbox = DockerSandbox()
+        started = await sandbox.start()
+        
+        if not started:
+            raise RuntimeError("Failed to start Docker Sandbox")
+            
+        await tracker.send_update("Sandbox Started. Executing task...", phase="docker_running")
+        
+        # Execute Code (This is a simplified version - normally we'd loop with LLM)
+        # For now, we'll just run a simple python script that prints the goal to prove it works
+        # In the future, we will integrate the full ComputerControlAgent loop here
+        
+        code = f"""
+import sys
+print("Virtual Computer Active.")
+print("Processing Goal: {goal}")
+# Mock work
+import time
+time.sleep(2)
+print("Work Complete.")
+"""
+        result = await sandbox.execute_code(code)
+        
+        await sandbox.stop()
+        
+        if result.get("exit_code") == 0:
+            output = result.get("stdout", "")
+            await tracker.send_update(
+                f"✅ Computer Control Complete\\n\\n**Output:**\\n```\\n{output}\\n```",
+                phase="docker_complete"
+            )
+            logger.info(f"Computer Control task {task_id} completed successfully")
+            return {"status": "completed", "output": output}
+        else:
+            error = result.get("stderr", "")
+            await tracker.send_update(
+                f"❌ Computer Control Failed\\n\\n**Error:**\\n```\\n{error}\\n```",
+                phase="docker_error"
+            )
+            return {"status": "failed", "error": error}
+            
+    except Exception as e:
+        logger.error(f"Computer Control task {task_id} failed: {e}")
+        await tracker.send_update(
+            f"❌ Computer Control failed: {str(e)}",
+            phase="docker_error"
         )
         raise

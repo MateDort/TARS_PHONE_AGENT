@@ -5356,6 +5356,7 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
 
     # Add deep research agent
     agents["deep_research"] = DeepResearchAgent(db=db, session_manager=session_manager)
+    agents["skill_creator"] = SkillCreatorAgent()
 
     # Add programmer agent (with session_manager for background tasks)
     agents["programmer"] = ProgrammerAgent(db=db, github_handler=None, session_manager=session_manager)
@@ -6131,6 +6132,29 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["session_id"]
+            }
+        },
+        # Skill Creator (Moltbot capability)
+        {
+            "name": "create_skill",
+            "description": "Create a new permanent skill/tool for TARS. Use when you identify a gap in your capabilities and write code to fix it. This creates a new 'skill' directory with code and metadata. Example: 'create a skill to resize images', 'create a tool to check stock prices'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "skill_name": {
+                        "type": "STRING",
+                        "description": "Short, unique name for the skill (e.g., 'image_resizer')"
+                    },
+                    "instruction": {
+                        "type": "STRING",
+                        "description": "Description of what the skill does and how to use it"
+                    },
+                    "code_content": {
+                        "type": "STRING",
+                        "description": "The Python code for the tool (optional - if provided)"
+                    }
+                },
+                "required": ["skill_name", "instruction"]
             }
         }
     ]

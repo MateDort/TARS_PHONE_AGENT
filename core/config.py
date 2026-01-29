@@ -42,6 +42,9 @@ class Config:
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
     CLAUDE_COMPLEX_MODEL = os.getenv('CLAUDE_COMPLEX_MODEL', 'claude-opus-4-20250514')  # Opus 4 for complex programming
     CLAUDE_FAST_MODEL = os.getenv('CLAUDE_FAST_MODEL', 'claude-sonnet-4-20250514')  # Sonnet 4 for faster tasks
+    
+    # OpenAI Configuration (optional fallback/alternative)
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
     # Agent Configuration
     AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower(
@@ -133,6 +136,11 @@ class Config:
     # GitHub Integration
     GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')
     GITHUB_USERNAME = os.getenv('GITHUB_USERNAME', '')
+
+    # Telegram Configuration
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+    TELEGRAM_TARS_CHAT_ID = os.getenv('TELEGRAM_TARS_CHAT_ID', '')
+    TELEGRAM_MATE_CHAT_ID = os.getenv('TELEGRAM_MATE_CHAT_ID', '')
 
     # Programmer Agent Settings
     PROJECTS_ROOT = os.getenv('PROJECTS_ROOT', '/Users/matedort/')

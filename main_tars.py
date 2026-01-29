@@ -14,6 +14,7 @@ from communication.reminder_checker import ReminderChecker
 from utils.translations import format_text
 from core.session_manager import SessionManager
 from communication.message_router import MessageRouter
+from core.memory_manager import memory_manager
 
 # Configure logging
 logging.basicConfig(
@@ -57,7 +58,8 @@ class TARSPhoneAgent:
             humor_percentage=Config.HUMOR_PERCENTAGE,
             honesty_percentage=Config.HONESTY_PERCENTAGE,
             personality=Config.PERSONALITY,
-            nationality=Config.NATIONALITY
+            nationality=Config.NATIONALITY,
+            memory_core=memory_manager.get_soul()
         )
 
         self.gemini_client = GeminiLiveClient(
@@ -144,7 +146,8 @@ class TARSPhoneAgent:
             humor_percentage=Config.HUMOR_PERCENTAGE,
             honesty_percentage=Config.HONESTY_PERCENTAGE,
             personality=Config.PERSONALITY,
-            nationality=Config.NATIONALITY
+            nationality=Config.NATIONALITY,
+            memory_core=memory_manager.get_soul()
         )
 
         # Update the Gemini client's system instruction
