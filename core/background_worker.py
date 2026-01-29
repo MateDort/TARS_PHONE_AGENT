@@ -17,6 +17,188 @@ from core.security import verify_confirmation_code
 logger = logging.getLogger(__name__)
 
 
+def detect_project_type(project_path: str) -> str:
+    """Auto-detect project type from files in directory.
+    
+    Args:
+        project_path: Path to project directory
+        
+    Returns:
+        Project type string (python, node, react, nextjs, rust, etc.)
+    """
+    path = Path(project_path)
+    
+    # Check for specific framework files
+    if (path / "next.config.js").exists() or (path / "next.config.mjs").exists():
+        return "nextjs"
+    elif (path / "package.json").exists():
+        try:
+            package_json = json.loads((path / "package.json").read_text())
+            deps = {**package_json.get("dependencies", {}), **package_json.get("devDependencies", {})}
+            if "react" in deps:
+                return "react"
+            elif "vue" in deps:
+                return "vue"
+            elif "express" in deps:
+                return "node-express"
+            else:
+                return "node"
+        except:
+            return "node"
+    elif (path / "requirements.txt").exists() or (path / "setup.py").exists() or (path / "pyproject.toml").exists():
+        return "python"
+    elif (path / "Cargo.toml").exists():
+        return "rust"
+    elif (path / "go.mod").exists():
+        return "go"
+    elif (path / "pom.xml").exists():
+        return "java-maven"
+    elif (path / "build.gradle").exists():
+        return "java-gradle"
+    else:
+        return "unknown"
+
+
+def generate_default_tarsrules(project_path: str, project_type: str) -> str:
+    """Generate default .tarsrules file based on project type.
+    
+    Args:
+        project_path: Path to project directory
+        project_type: Detected project type
+        
+    Returns:
+        Default .tarsrules content
+    """
+    project_name = Path(project_path).name
+    
+    # Base template
+    template = f"""# TARS Coding Rules for {project_name}
+
+## Project Type
+- Type: {project_type}
+- Auto-generated: {datetime.now().strftime('%Y-%m-%d')}
+
+## Language & Style
+"""
+    
+    # Add language-specific rules
+    if project_type in ['python']:
+        template += """- Python 3.11+
+- Use type hints always
+- Follow PEP 8 style guide
+- Async/await for I/O operations
+- Use pathlib for file paths
+"""
+    elif project_type in ['nextjs', 'react', 'node']:
+        template += """- TypeScript preferred
+- Use modern ES6+ syntax
+- Async/await over promises
+- Use const/let, never var
+- Follow Airbnb style guide
+"""
+    elif project_type == 'rust':
+        template += """- Rust stable edition
+- Follow clippy recommendations
+- Use Result<T, E> for error handling
+- Prefer ? operator over unwrap()
+"""
+    else:
+        template += """- [Auto-detected or user-specified]
+"""
+    
+    template += """
+## Architecture Patterns
+- Modular design with clear separation of concerns
+- Keep functions small and focused
+- Write self-documenting code with clear names
+
+## Git Policy
+- Commit message format: "[PHASE] Action: brief description"
+- Push after each phase completion
+- Create feature branches for major changes
+
+## Testing Requirements
+"""
+    
+    # Add test command detection
+    path = Path(project_path)
+    if (path / "package.json").exists():
+        template += """- Run: npm test
+- Write tests for new features
+"""
+    elif project_type == 'python':
+        template += """- Run: pytest
+- Write tests for new features
+- Aim for >80% coverage
+"""
+    else:
+        template += """- [Auto-detected test commands]
+"""
+    
+    template += """
+## Custom Instructions
+# Add project-specific rules below:
+# - Specific libraries to use/avoid
+# - API patterns
+# - File organization rules
+"""
+    
+    return template
+
+
+async def load_project_context(project_path: str) -> dict:
+    """Load project-specific context including .tarsrules and owner preferences.
+    
+    Args:
+        project_path: Path to project directory
+        
+    Returns:
+        Dictionary with project context (rules, owner_profile, project_type)
+    """
+    context = {}
+    path = Path(project_path)
+    
+    # Detect project type
+    context['project_type'] = detect_project_type(project_path)
+    
+    # Load .tarsrules
+    rules_path = path / ".tarsrules"
+    if rules_path.exists():
+        try:
+            context['rules'] = rules_path.read_text()
+            logger.info(f"Loaded .tarsrules from {rules_path}")
+        except Exception as e:
+            logger.warning(f"Could not load .tarsrules: {e}")
+            context['rules'] = generate_default_tarsrules(project_path, context['project_type'])
+    else:
+        # Create default .tarsrules
+        context['rules'] = generate_default_tarsrules(project_path, context['project_type'])
+        try:
+            rules_path.write_text(context['rules'])
+            logger.info(f"Created default .tarsrules at {rules_path}")
+        except Exception as e:
+            logger.warning(f"Could not create .tarsrules: {e}")
+    
+    # Load Máté's preferences
+    mate_path = Path(__file__).parent.parent / "Máté.md"
+    if mate_path.exists():
+        try:
+            context['owner_profile'] = mate_path.read_text()
+            logger.info("Loaded owner preferences from Máté.md")
+        except Exception as e:
+            logger.warning(f"Could not load Máté.md: {e}")
+    
+    # Load TARS identity
+    tars_path = Path(__file__).parent.parent / "TARS.md"
+    if tars_path.exists():
+        try:
+            context['tars_identity'] = tars_path.read_text()
+        except Exception as e:
+            logger.warning(f"Could not load TARS.md: {e}")
+    
+    return context
+
+
 class TaskProgressTracker:
     """Tracks and reports progress of background tasks."""
     
@@ -63,29 +245,36 @@ class TaskProgressTracker:
         logger.info(f"Task {self.task_id}: {message}")
 
 
-async def send_discord_update(data: dict):
-    """Send update to Discord via KIPP (N8N webhook).
+async def send_log_update(data: dict):
+    """Send LOG/STATUS update via KIPP to configured channel (Discord or Telegram).
+    
+    Uses Config.LOG_CHANNEL to determine where logs go.
+    For confirmations/questions that need user response, use send_confirmation_request().
     
     Args:
         data: {
             'task_id': str,
-            'type': str (task_started|progress|phase_complete|confirmation_request|task_complete|error),
+            'type': str (task_started|progress|phase_complete|task_complete|error),
             'message': str,
             'command': str (optional),
-            'phase': str (optional),
-            'code_request': bool (optional)
+            'phase': str (optional)
         }
     """
     webhook_url = Config.N8N_WEBHOOK_URL
     
     if not webhook_url:
-        logger.warning("N8N webhook not configured for Discord updates")
+        logger.warning("N8N webhook not configured for updates")
         return
     
-    # Format payload for KIPP/N8N to route to Discord
+    # Use configured log channel (default: discord)
+    log_channel = Config.LOG_CHANNEL.lower()
+    
+    # Format payload for KIPP/N8N
     payload = {
-        "target": "discord",  # Tell KIPP to route to Discord
-        "source": "background_task",  # Identify as background task update
+        "target": log_channel,  # KIPP routes based on this
+        "routing_instruction": f"send_via_{log_channel}",  # Clear instruction for KIPP
+        "message_type": "log",  # This is a log message, not a confirmation
+        "source": "background_task",
         "task_id": data.get('task_id'),
         "type": data.get('type'),
         "message": data.get('message'),
@@ -96,14 +285,10 @@ async def send_discord_update(data: dict):
         payload['command'] = data['command']
     if 'phase' in data:
         payload['phase'] = data['phase']
-    if 'code_request' in data:
-        payload['awaiting_confirmation'] = True
     if 'goal' in data:
         payload['goal'] = data['goal']
     if 'project' in data:
         payload['project'] = data['project']
-    if 'reason' in data:
-        payload['reason'] = data['reason']
     
     try:
         import aiohttp
@@ -114,11 +299,82 @@ async def send_discord_update(data: dict):
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
                 if response.status == 200:
-                    logger.info(f"Sent Discord update via KIPP: {data.get('message', '')[:50]}")
+                    logger.info(f"Sent log to {log_channel} via KIPP: {data.get('message', '')[:50]}")
                 else:
                     logger.warning(f"KIPP webhook returned {response.status}")
     except Exception as e:
-        logger.error(f"Failed to send Discord update via KIPP: {e}")
+        logger.error(f"Failed to send log update via KIPP: {e}")
+
+
+# Alias for backward compatibility
+send_discord_update = send_log_update
+
+
+async def send_confirmation_request(data: dict):
+    """Send CONFIRMATION REQUEST via KIPP to configured channel (Discord or Telegram).
+    
+    Uses Config.CONFIRMATION_CHANNEL to determine where confirmations go.
+    This is for confirmations, questions, and plan approvals that need user response.
+    
+    Args:
+        data: {
+            'task_id': str,
+            'type': str (confirmation_request|user_question|plan_approval_request),
+            'message': str,
+            'command': str (optional),
+            'options': list (optional),
+            'reason': str (optional)
+        }
+    """
+    webhook_url = Config.N8N_WEBHOOK_URL
+    
+    if not webhook_url:
+        logger.warning("N8N webhook not configured for confirmations")
+        return
+    
+    # Use configured confirmation channel (default: telegram)
+    confirm_channel = Config.CONFIRMATION_CHANNEL.lower()
+    
+    # Format payload for KIPP/N8N
+    payload = {
+        "target": confirm_channel,  # KIPP routes based on this
+        "routing_instruction": f"send_via_{confirm_channel}",  # Clear instruction for KIPP
+        "message_type": "confirmation",  # This needs user response
+        "source": "background_task",
+        "task_id": data.get('task_id'),
+        "type": data.get('type'),
+        "message": data.get('message'),
+        "awaiting_response": True,  # KIPP knows to expect a reply
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    if 'command' in data:
+        payload['command'] = data['command']
+    if 'options' in data:
+        payload['options'] = data['options']
+    if 'reason' in data:
+        payload['reason'] = data['reason']
+    if 'plan' in data:
+        payload['plan'] = data['plan']
+    
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                webhook_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    logger.info(f"Sent confirmation to {confirm_channel} via KIPP: {data.get('message', '')[:50]}")
+                else:
+                    logger.warning(f"KIPP webhook returned {response.status}")
+    except Exception as e:
+        logger.error(f"Failed to send confirmation via KIPP: {e}")
+
+
+# Alias for backward compatibility
+send_telegram_confirmation = send_confirmation_request
 
 
 def get_command_reason(command: str) -> str:
@@ -171,7 +427,7 @@ async def request_confirmation_dual_channel(
         Confirmation code if provided, None if timeout
     """
     # Format the confirmation message
-    discord_message = (
+    telegram_message = (
         f"⚠️ **Background Task #{task_id} Needs Confirmation**\n\n"
         f"**Command:** `{command}`\n"
         f"**Reason:** {reason}\n\n"
@@ -185,14 +441,13 @@ async def request_confirmation_dual_channel(
         f"Please provide your confirmation code."
     )
     
-    # 1. Send Discord notification
-    await send_discord_update({
+    # 1. Send Telegram confirmation request (confirmations go to Telegram for easy reply)
+    await send_telegram_confirmation({
         'task_id': task_id,
         'type': 'confirmation_request',
         'command': command,
         'reason': reason,
-        'message': discord_message,
-        'code_request': True
+        'message': telegram_message
     })
     
     # 2. Check if user is in an active call
@@ -304,25 +559,25 @@ async def run_autonomous_programming(
     max_iterations: int = 50,
     max_minutes: int = 15
 ):
-    """Run an autonomous programming session in background.
+    """Run an autonomous programming session with phase-based execution.
     
-    This is the main worker function called by RQ. It:
-    1. Uses Claude Sonnet 4.5 to plan and execute coding tasks
-    2. Iterates through code/test/fix loops
-    3. Sends progress updates to Discord
-    4. Requests confirmation for destructive commands
-    5. Runs until task complete or timeout
+    This is the main worker function called by RQ. It implements Claude Code-style
+    workflow with distinct phases:
+    1. DISCOVER - Map project structure (read-only)
+    2. PLAN - Generate detailed plan with user approval
+    3. EXECUTE - Implement with auto-git commits
+    4. VERIFY - Run tests and fix failures
+    5. PUBLISH - Push to GitHub
     
     Args:
         task_id: Unique task ID
         goal: What to build/fix
         project_path: Where to work
         session_id: TARS session that started this task
-        max_iterations: Maximum number of iterations
+        max_iterations: Maximum total iterations across all phases
         max_minutes: Maximum runtime in minutes
     """
     # CRITICAL: Set fork safety FIRST, before any imports that might use Objective-C
-    # This is the first thing the child process should do
     import os
     os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
     
@@ -330,8 +585,12 @@ async def run_autonomous_programming(
     from core.session_manager import SessionManager
     from core.database import Database
     from sub_agents_tars import ProgrammerAgent
+    from core.phase_manager import PhaseManager, PHASES
+    from core.context_manager import ContextManager
+    from core.verification import VerificationEngine
+    from core.user_interaction import ask_user_question, request_plan_approval, send_phase_completion_notification
     
-    logger.info(f"Starting autonomous programming task {task_id}: {goal}")
+    logger.info(f"Starting phase-based autonomous programming task {task_id}: {goal}")
     
     # Initialize
     tracker = TaskProgressTracker(task_id, discord_updates=True)
@@ -339,315 +598,497 @@ async def run_autonomous_programming(
     
     # Send initial update
     await tracker.send_update(
-        f"🚀 Started autonomous coding\n**Goal:** {goal}\n**Project:** {project_path}",
+        f"🚀 Started autonomous coding (Phase-Based)\n**Goal:** {goal}\n**Project:** {project_path}",
         phase="started"
     )
     
     try:
-        # Initialize dependencies AFTER setting fork safety
-        # Note: SessionManager needs to be accessible for confirmation requests
-        # We get it through a global reference or import
+        # Initialize all managers and systems
         db = Database()
-        
-        # Import here to avoid circular dependency at module level
-        from core.session_manager import SessionManager
-        
-        # Try to get existing SessionManager instance
-        # For now, we'll pass None and handle confirmation without voice
-        # TODO: Implement proper SessionManager singleton pattern
-        session_manager = None
-        
+        session_manager = None  # Worker runs in separate process
         programmer = ProgrammerAgent(db=db, github_handler=None, session_manager=session_manager)
-        
-        # Initialize Claude client
         claude_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
         
-        # Build initial context
+        # Initialize phase-based systems
+        phase_manager = PhaseManager(project_path)
+        context_mgr = ContextManager(max_tokens=180000)
+        verifier = VerificationEngine(project_path)
+        
+        # Load project context (.tarsrules, owner preferences, etc.)
+        await tracker.send_update("📚 Loading project context...")
+        project_context = await load_project_context(project_path)
+        
+        # Ensure git repository exists
+        await tracker.send_update("🔧 Ensuring git repository...")
+        git_init_result = await programmer._git_ensure_repo(project_path)
+        logger.info(f"Git repo status: {git_init_result}")
+        
+        # Initialize context
         context = {
             "goal": goal,
             "project_path": project_path,
+            "project_context": project_context,
             "iteration": 0,
             "errors": [],
             "completed_actions": [],
-            "recent_commands": [],  # Track recent commands to detect loops
-            "recent_file_edits": [],  # Track recent file edits to detect loops
-            "stuck_counter": 0  # Count iterations without progress
+            "recent_commands": [],
+            "recent_file_edits": [],
+            "stuck_counter": 0,
+            "git_commits": []
         }
         
-        await tracker.send_update("📋 Planning approach...", phase="planning")
+        # Start with DISCOVER phase
+        current_phase = 'DISCOVER'
+        await tracker.send_update(
+            f"🔍 Entering DISCOVER phase\nMapping project structure...",
+            phase="discover"
+        )
         
-        for iteration in range(max_iterations):
-            # Check if stuck (no progress for 5 iterations)
-            if context['stuck_counter'] >= 5:
-                await tracker.send_update(
-                    f"⚠️  No progress for 5 iterations. Task may be stuck.\n"
-                    f"Last actions: {context['completed_actions'][-3:]}\n"
-                    f"Attempting to break out of loop...",
-                    phase="stuck"
-                )
-                context['stuck_counter'] = 0  # Reset and try to recover
+        # MAIN PHASE LOOP
+        total_iterations = 0
+        while current_phase != 'COMPLETE' and total_iterations < max_iterations:
+            # Get current phase configuration
+            phase_config = phase_manager.get_phase_config(current_phase)
             
-            # Check timeout
-            elapsed = (time.time() - start_time) / 60
-            if elapsed > max_minutes:
-                await tracker.send_update(
-                    f"⏱️ Time limit reached ({max_minutes} min)",
-                    phase="timeout"
-                )
-                break
-            
-            # Update context
-            context["iteration"] = iteration
-            
-            # Ask Claude what to do next
-            try:
-                response = claude_client.messages.create(
-                    model=Config.CLAUDE_COMPLEX_MODEL,
-                    max_tokens=4000,
-                    temperature=0.7,
-                    system=(
-                        f"You are an expert programmer working autonomously. "
-                        f"Goal: {goal}\n"
-                        f"Project: {project_path}\n"
-                        f"Iteration: {iteration}/{max_iterations}\n"
-                        f"Previous actions: {context['completed_actions'][-5:]}\n"
-                        f"Recent commands: {context['recent_commands'][-3:]}\n"
-                        f"Recent file edits: {context['recent_file_edits'][-3:]}\n"
-                        f"Recent errors: {context['errors'][-3:]}\n\n"
-                        f"IMPORTANT: Don't repeat commands or file edits!\n"
-                        f"- Already worked on these files: {context['recent_file_edits'][-3:]}\n"
-                        f"- Work on DIFFERENT files to make progress\n"
-                        f"- Use 'edit_file' for both creating NEW files and editing existing ones\n"
-                        f"- For a Next.js app, you need: package.json, tsconfig.json, next.config.js, "
-                        f"pages/index.tsx, components/, styles/, etc.\n\n"
-                        f"Decide the next action. Respond with JSON:\n"
-                        f'{{"action": "edit_file|run_command|run_tests|complete", '
-                        f'"file_path": "path/to/file", "changes": "what to create/change", "command": "shell command", '
-                        f'"reason": "why this action"}}\n\n'
-                        f"NOTE: edit_file works for BOTH creating new files and editing existing ones."
-                    ),
-                    messages=[{
-                        "role": "user",
-                        "content": f"What should I do next to achieve: {goal}?"
-                    }]
-                )
+            # Phase iteration loop
+            for phase_iteration in range(phase_config.get('max_iterations', 10)):
+                total_iterations += 1
                 
-                # Parse Claude's decision
-                import json
-                import re
-                decision_text = response.content[0].text
-                
-                # Log raw response for debugging
-                logger.debug(f"Claude response (raw): {decision_text[:200]}")
-                
-                # Extract JSON from markdown code blocks if present
-                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', decision_text, re.DOTALL)
-                if json_match:
-                    decision_text = json_match.group(1)
-                else:
-                    # Try to find JSON object directly
-                    json_match = re.search(r'\{.*\}', decision_text, re.DOTALL)
-                    if json_match:
-                        decision_text = json_match.group(0)
-                
-                decision = json.loads(decision_text)
-                
-                action = decision.get('action')
-                
-                if action == 'edit_file':
-                    # Edit or create a file
-                    file_path = decision.get('file_path')
-                    changes = decision.get('changes')
-                    
-                    if not file_path:
-                        logger.error("No file_path provided in edit_file action")
-                        context['errors'].append("Missing file_path")
-                        context['stuck_counter'] += 1
-                        continue
-                    
-                    # Convert to absolute path if relative
-                    from pathlib import Path
-                    if not Path(file_path).is_absolute():
-                        file_path = str(Path(project_path) / file_path)
-                    
-                    # Normalize the path for comparison
-                    normalized_path = str(Path(file_path).resolve())
-                    
-                    # Check for repetitive file edits (loop detection)
-                    if normalized_path in context['recent_file_edits'][-2:]:
-                        logger.warning(f"Detected repeated edit of same file: {file_path}")
-                        await tracker.send_update(
-                            f"⚠️  Already edited {file_path} recently!\n"
-                            f"Please create or edit DIFFERENT files to make progress.\n"
-                            f"Recent files: {[Path(p).name for p in context['recent_file_edits'][-3:]]}"
-                        )
-                        context['errors'].append(f"Repeated edit: {file_path}")
-                        context['stuck_counter'] += 1
-                        continue
-                    
-                    # Check if file exists - use create or edit accordingly
-                    file_exists = Path(file_path).expanduser().exists()
-                    
-                    if file_exists:
-                        await tracker.send_update(f"✏️  Editing {Path(file_path).name}")
-                        result = await programmer._edit_file(
-                            file_path=file_path,
-                            changes_description=changes
-                        )
-                        action_verb = "Edited"
-                    else:
-                        await tracker.send_update(f"📝 Creating {file_path}")
-                        result = await programmer._create_file(
-                            file_path=file_path,
-                            description=changes
-                        )
-                        action_verb = "Created"
-                    
-                    # Check if operation succeeded
-                    if not result:
-                        logger.error(f"File operation returned empty result")
-                        await tracker.send_update(f"❌ Operation failed - no result")
-                        context['errors'].append("Empty result from file operation")
-                        context['stuck_counter'] += 1
-                    elif "does not exist" in result or "error" in result.lower() or "failed" in result.lower():
-                        logger.error(f"File operation failed: {result}")
-                        await tracker.send_update(f"❌ Failed: {result[:200]}")
-                        context['errors'].append(result[:200])
-                        context['stuck_counter'] += 1
-                    else:
-                        logger.info(f"Successfully {action_verb.lower()} {file_path}")
-                        context['completed_actions'].append(f"{action_verb} {Path(file_path).name}")
-                        context['recent_file_edits'].append(normalized_path)  # Track this edit
-                        context['stuck_counter'] = 0  # Reset - made progress!
-                        await tracker.send_update(f"✅ {action_verb} {Path(file_path).name}")
-                    
-                elif action == 'run_command':
-                    # Run terminal command
-                    command = decision.get('command')
-                    reason = decision.get('reason', 'execute command')
-                    
-                    # Check for repetitive commands (loop detection)
-                    if command in context['recent_commands'][-3:]:
-                        logger.warning(f"Detected repeated command: {command}")
-                        await tracker.send_update(
-                            f"⚠️  Skipping repeated command: {command}\nPlease make progress by editing or creating files."
-                        )
-                        context['errors'].append(f"Repeated command: {command}")
-                        context['stuck_counter'] += 1
-                        continue
-                    
-                    # Track this command
-                    context['recent_commands'].append(command)
-                    
-                    # Check if destructive
-                    if is_destructive_command(command):
-                        # PAUSE and request confirmation via BOTH Discord and voice
-                        code = await request_confirmation_dual_channel(
-                            task_id=task_id,
-                            command=command,
-                            reason=get_command_reason(command),
-                            session_manager=session_manager
-                        )
-                        
-                        if not code or not verify_confirmation_code(code):
-                            await tracker.send_update(
-                                "❌ Invalid or missing confirmation code",
-                                phase="error"
-                            )
-                            break
-                    
-                    # Execute command
+                # Check if stuck (no progress for 5 iterations)
+                if context['stuck_counter'] >= 5:
                     await tracker.send_update(
-                        f"⚙️  Executing: `{command}`\nReason: {reason}",
-                        command=command
+                        f"⚠️ No progress for 5 iterations. Task may be stuck.\n"
+                        f"Last actions: {context['completed_actions'][-3:]}\n"
+                        f"Attempting to break out of loop...",
+                        phase="stuck"
                     )
-                    
-                    import subprocess
-                    result = subprocess.run(
-                        command,
-                        shell=True,
-                        cwd=project_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=120
-                    )
-                    
-                    if result.returncode == 0:
-                        await tracker.send_update(
-                            f"✅ Command succeeded\n```\n{result.stdout[:200]}\n```"
-                        )
-                        context['completed_actions'].append(f"Ran: {command}")
-                        
-                        # Only reset stuck counter for productive commands (not just cat/ls)
-                        if not any(cmd in command.lower() for cmd in ['cat', 'ls', 'find', 'grep', 'echo']):
-                            context['stuck_counter'] = 0  # Made progress!
-                        else:
-                            context['stuck_counter'] += 1  # Just reading files
-                    else:
-                        await tracker.send_update(
-                            f"❌ Command failed (exit {result.returncode})"
-                        )
-                        context['errors'].append(result.stderr[:500])
-                        context['stuck_counter'] += 1
+                    context['stuck_counter'] = 0  # Reset and try to recover
                 
-                elif action == 'run_tests':
-                    # Run tests
-                    await tracker.send_update("🧪 Running tests...", phase="testing")
-                    
-                    # Try common test commands
-                    test_commands = ['npm test', 'pytest', 'python -m pytest', 'python -m unittest']
-                    
-                    for test_cmd in test_commands:
-                        try:
-                            result = subprocess.run(
-                                test_cmd,
-                                shell=True,
-                                cwd=project_path,
-                                capture_output=True,
-                                text=True,
-                                timeout=60
-                            )
-                            
-                            if result.returncode == 0:
-                                await tracker.send_update(
-                                    "✅ All tests passed!",
-                                    phase="tests_passed"
-                                )
-                                break
-                            else:
-                                context['errors'].append(result.stderr[:500])
-                        except:
-                            continue
-                
-                elif action == 'complete':
-                    # Task complete
+                # Check timeout
+                elapsed = (time.time() - start_time) / 60
+                if elapsed > max_minutes:
                     await tracker.send_update(
-                        f"🎉 Task complete!\n{decision.get('reason', 'Goal achieved')}",
-                        phase="complete"
+                        f"⏱️ Time limit reached ({max_minutes} min)",
+                        phase="timeout"
                     )
-                    context['stuck_counter'] = 0  # Success!
                     break
                 
-                else:
-                    logger.warning(f"Unknown action: {action}")
-                    context['stuck_counter'] += 1
+                # Update context
+                context["iteration"] = total_iterations
+                
+                # Compact context if needed
+                context = await context_mgr.compact_if_needed(context, claude_client)
+                
+                # Get phase-specific system prompt
+                system_prompt = phase_manager.get_phase_prompt(current_phase, context, project_context)
+                
+                # Build conversation messages with context
+                # Include what Claude has done so far and file contents it has read
+                conversation_context = f"Goal: {goal}\n\n"
+                
+                # Add completed actions
+                if context.get('completed_actions'):
+                    conversation_context += "Actions completed so far:\n"
+                    for action in context['completed_actions'][-10:]:  # Last 10 actions
+                        conversation_context += f"- {action}\n"
+                    conversation_context += "\n"
+                
+                # Add file contents that were read
+                if context.get('file_contents'):
+                    conversation_context += "Files I have read:\n"
+                    for filepath, content in list(context['file_contents'].items())[-5:]:  # Last 5 files
+                        from pathlib import Path
+                        filename = Path(filepath).name
+                        # Truncate content for context
+                        truncated = content[:3000] if len(content) > 3000 else content
+                        conversation_context += f"\n--- {filename} ---\n{truncated}\n"
+                    conversation_context += "\n"
+                
+                # Add recent errors
+                if context.get('errors') and len(context['errors']) > 0:
+                    conversation_context += "Recent errors:\n"
+                    for err in context['errors'][-3:]:
+                        conversation_context += f"- {err}\n"
+                    conversation_context += "\n"
+                
+                conversation_context += "What action should I take next? Respond with a JSON object."
+                
+                # Ask Claude what to do next
+                try:
+                    response = claude_client.messages.create(
+                        model=Config.CLAUDE_COMPLEX_MODEL,
+                        max_tokens=4000,
+                        temperature=0.7,
+                        system=system_prompt,
+                        messages=[{
+                            "role": "user",
+                            "content": conversation_context
+                        }]
+                    )
                     
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parse error in iteration {iteration}: {e}")
-                logger.error(f"Claude response was: {decision_text[:500]}")
-                context['errors'].append(f"JSON parse error: {e}")
-                context['stuck_counter'] += 1
-                await tracker.send_update(f"⚠️  Failed to parse AI response. Retrying...")
-            except Exception as e:
-                logger.error(f"Error in iteration {iteration}: {e}")
-                context['errors'].append(str(e))
-                context['stuck_counter'] += 1
-                await tracker.send_update(f"⚠️  Error: {str(e)[:200]}")
+                    # Parse Claude's decision
+                    import json
+                    import re
+                    decision_text = response.content[0].text
+                    
+                    # Log raw response for debugging
+                    logger.debug(f"Claude response (raw): {decision_text[:200]}")
+                    
+                    # Extract JSON from markdown code blocks if present
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', decision_text, re.DOTALL)
+                    if json_match:
+                        decision_text = json_match.group(1)
+                    else:
+                        # Try to find JSON object directly
+                        json_match = re.search(r'\{.*\}', decision_text, re.DOTALL)
+                        if json_match:
+                            decision_text = json_match.group(0)
+                    
+                    decision = json.loads(decision_text)
+                    
+                    action = decision.get('action')
+                    
+                    # VALIDATE ACTION AGAINST PHASE CONSTRAINTS
+                    if not phase_manager.validate_action(current_phase, action):
+                        await tracker.send_update(
+                            f"⚠️ Action '{action}' not allowed in {current_phase} phase"
+                        )
+                        context['stuck_counter'] += 1
+                        continue
+                    
+                    # HANDLE PHASE COMPLETION
+                    if action == 'complete_phase':
+                        summary = decision.get('summary', 'Phase complete')
+                        phase_manager.save_phase_artifact(current_phase, summary)
+                        
+                        next_phase = phase_manager.get_next_phase(current_phase)
+                        await send_phase_completion_notification(task_id, current_phase, summary, next_phase)
+                        
+                        # Handle PLAN phase approval
+                        if current_phase == 'PLAN':
+                            approved = await request_plan_approval(task_id, summary, 600)
+                            if approved:
+                                current_phase = 'EXECUTE'
+                            else:
+                                continue  # Revise plan
+                        elif phase_manager.should_auto_transition(current_phase):
+                            current_phase = next_phase
+                        
+                        break  # Exit phase iteration loop
+                    
+                    # HANDLE ASK USER QUESTION (PLAN phase)
+                    elif action == 'ask_user_question':
+                        question = decision.get('question', '')
+                        options = decision.get('options', [])
+                        answer = await ask_user_question(task_id, question, options, 300)
+                        context['completed_actions'].append(f"Asked: {question[:30]}")
+                        context['stuck_counter'] = 0
+                        continue
+                    
+                    # HANDLE READ FILE (for discovery/analysis)
+                    elif action == 'read_file':
+                        file_path = decision.get('file_path')
+                        
+                        if not file_path:
+                            logger.error("No file_path provided in read_file action")
+                            context['errors'].append("Missing file_path for read")
+                            context['stuck_counter'] += 1
+                            continue
+                        
+                        # Convert to absolute path if relative
+                        from pathlib import Path
+                        if not Path(file_path).is_absolute():
+                            file_path = str(Path(project_path) / file_path)
+                        
+                        try:
+                            file_path_obj = Path(file_path).expanduser()
+                            if file_path_obj.exists():
+                                content = file_path_obj.read_text()
+                                # Truncate very long files
+                                if len(content) > 10000:
+                                    content = content[:10000] + f"\n\n... [truncated, {len(content)} total chars]"
+                                
+                                context['completed_actions'].append(f"Read {Path(file_path).name}")
+                                context['stuck_counter'] = 0  # Made progress
+                                
+                                # Store file content in context for Claude to use
+                                if 'file_contents' not in context:
+                                    context['file_contents'] = {}
+                                context['file_contents'][file_path] = content[:5000]  # Keep summary in context
+                                
+                                logger.info(f"Read file: {file_path} ({len(content)} chars)")
+                                await tracker.send_update(f"📖 Read {Path(file_path).name} ({len(content)} chars)")
+                            else:
+                                context['errors'].append(f"File not found: {file_path}")
+                                context['stuck_counter'] += 1
+                                await tracker.send_update(f"❌ File not found: {file_path}")
+                        except Exception as e:
+                            logger.error(f"Error reading file {file_path}: {e}")
+                            context['errors'].append(f"Read error: {str(e)[:100]}")
+                            context['stuck_counter'] += 1
+                        continue
+                    
+                    # HANDLE LIST FILES (for discovery)
+                    elif action == 'list_files':
+                        directory = decision.get('directory', project_path)
+                        
+                        from pathlib import Path
+                        if not Path(directory).is_absolute():
+                            directory = str(Path(project_path) / directory)
+                        
+                        try:
+                            dir_path = Path(directory).expanduser()
+                            if dir_path.exists() and dir_path.is_dir():
+                                files = list(dir_path.iterdir())
+                                file_list = []
+                                for f in sorted(files)[:50]:  # Limit to 50 items
+                                    prefix = "📁" if f.is_dir() else "📄"
+                                    file_list.append(f"{prefix} {f.name}")
+                                
+                                context['completed_actions'].append(f"Listed {directory}")
+                                context['stuck_counter'] = 0
+                                
+                                logger.info(f"Listed directory: {directory} ({len(files)} items)")
+                                await tracker.send_update(f"📂 Listed {Path(directory).name} ({len(files)} items)")
+                            else:
+                                context['errors'].append(f"Directory not found: {directory}")
+                                context['stuck_counter'] += 1
+                        except Exception as e:
+                            logger.error(f"Error listing directory {directory}: {e}")
+                            context['errors'].append(f"List error: {str(e)[:100]}")
+                            context['stuck_counter'] += 1
+                        continue
+                    
+                    # EXISTING ACTIONS
+                    elif action == 'edit_file':
+                        # Edit or create a file
+                        file_path = decision.get('file_path')
+                        changes = decision.get('changes')
+                        
+                        if not file_path:
+                            logger.error("No file_path provided in edit_file action")
+                            context['errors'].append("Missing file_path")
+                            context['stuck_counter'] += 1
+                            continue
+                        
+                        # Convert to absolute path if relative
+                        from pathlib import Path
+                        if not Path(file_path).is_absolute():
+                            file_path = str(Path(project_path) / file_path)
+                        
+                        # Normalize the path for comparison
+                        normalized_path = str(Path(file_path).resolve())
+                        
+                        # Check for repetitive file edits (loop detection)
+                        if normalized_path in context['recent_file_edits'][-2:]:
+                            logger.warning(f"Detected repeated edit of same file: {file_path}")
+                            await tracker.send_update(
+                                f"⚠️ Already edited {file_path} recently!\n"
+                                f"Please create or edit DIFFERENT files to make progress.\n"
+                                f"Recent files: {[Path(p).name for p in context['recent_file_edits'][-3:]]}"
+                            )
+                            context['errors'].append(f"Repeated edit: {file_path}")
+                            context['stuck_counter'] += 1
+                            continue
+                        
+                        # Check if file exists - use create or edit accordingly
+                        file_exists = Path(file_path).expanduser().exists()
+                        
+                        if file_exists:
+                            await tracker.send_update(f"✏️ Editing {Path(file_path).name}")
+                            result = await programmer._edit_file(
+                                file_path=file_path,
+                                changes_description=changes
+                            )
+                            action_verb = "Edited"
+                        else:
+                            await tracker.send_update(f"📝 Creating {file_path}")
+                            result = await programmer._create_file(
+                                file_path=file_path,
+                                description=changes
+                            )
+                            action_verb = "Created"
+                        
+                        # Check if operation succeeded
+                        if not result:
+                            logger.error(f"File operation returned empty result")
+                            await tracker.send_update(f"❌ Operation failed - no result")
+                            context['errors'].append("Empty result from file operation")
+                            context['stuck_counter'] += 1
+                        elif "does not exist" in result or "error" in result.lower() or "failed" in result.lower():
+                            logger.error(f"File operation failed: {result}")
+                            await tracker.send_update(f"❌ Failed: {result[:200]}")
+                            context['errors'].append(result[:200])
+                            context['stuck_counter'] += 1
+                        else:
+                            logger.info(f"Successfully {action_verb.lower()} {file_path}")
+                            context['completed_actions'].append(f"{action_verb} {Path(file_path).name}")
+                            context['recent_file_edits'].append(normalized_path)  # Track this edit
+                            context['stuck_counter'] = 0  # Reset - made progress!
+                            await tracker.send_update(f"✅ {action_verb} {Path(file_path).name}")
+                            
+                            # AUTO-COMMIT in EXECUTE phase
+                            if current_phase == 'EXECUTE' and phase_config.get('git_policy') == 'commit_per_step':
+                                commit_msg = f"[{current_phase}] {decision.get('reason', 'Update')[:50]}"
+                                git_result = await programmer._git_commit_smart(
+                                    project_path=project_path,
+                                    message=commit_msg,
+                                    files=[file_path]
+                                )
+                                if "✓" in git_result:
+                                    await tracker.send_update(f"📝 {git_result}")
+                                    context['git_commits'].append(commit_msg)
+                    
+                    elif action == 'run_command':
+                        # Run terminal command
+                        command = decision.get('command')
+                        reason = decision.get('reason', 'execute command')
+                        
+                        # Check for repetitive commands (loop detection)
+                        if command in context['recent_commands'][-3:]:
+                            logger.warning(f"Detected repeated command: {command}")
+                            await tracker.send_update(
+                                f"⚠️ Skipping repeated command: {command}\nPlease make progress by editing or creating files."
+                            )
+                            context['errors'].append(f"Repeated command: {command}")
+                            context['stuck_counter'] += 1
+                            continue
+                        
+                        # Track this command
+                        context['recent_commands'].append(command)
+                        
+                        # Check if destructive
+                        if is_destructive_command(command):
+                            # PAUSE and request confirmation via Telegram
+                            code = await request_confirmation_dual_channel(
+                                task_id=task_id,
+                                command=command,
+                                reason=get_command_reason(command),
+                                session_manager=session_manager
+                            )
+                            
+                            if not code or not verify_confirmation_code(code):
+                                await tracker.send_update(
+                                    "❌ Invalid or missing confirmation code",
+                                    phase="error"
+                                )
+                                break
+                        
+                        # Execute command
+                        await tracker.send_update(
+                            f"⚙️ Executing: `{command}`\nReason: {reason}",
+                            command=command
+                        )
+                        
+                        import subprocess
+                        result = subprocess.run(
+                            command,
+                            shell=True,
+                            cwd=project_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        
+                        if result.returncode == 0:
+                            await tracker.send_update(
+                                f"✅ Command succeeded\n```\n{result.stdout[:200]}\n```"
+                            )
+                            context['completed_actions'].append(f"Ran: {command}")
+                            
+                            # Only reset stuck counter for productive commands (not just cat/ls)
+                            if not any(cmd in command.lower() for cmd in ['cat', 'ls', 'find', 'grep', 'echo']):
+                                context['stuck_counter'] = 0  # Made progress!
+                            else:
+                                context['stuck_counter'] += 1  # Just reading files
+                        else:
+                            await tracker.send_update(
+                                f"❌ Command failed (exit {result.returncode})"
+                            )
+                            context['errors'].append(result.stderr[:500])
+                            context['stuck_counter'] += 1
+                    
+                    elif action == 'run_tests':
+                        # Run tests
+                        await tracker.send_update("🧪 Running tests...", phase="testing")
+                        
+                        # Try common test commands
+                        test_commands = ['npm test', 'pytest', 'python -m pytest', 'python -m unittest']
+                        
+                        for test_cmd in test_commands:
+                            try:
+                                result = subprocess.run(
+                                    test_cmd,
+                                    shell=True,
+                                    cwd=project_path,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=60
+                                )
+                                
+                                if result.returncode == 0:
+                                    await tracker.send_update(
+                                        "✅ All tests passed!",
+                                        phase="tests_passed"
+                                    )
+                                    break
+                                else:
+                                    context['errors'].append(result.stderr[:500])
+                            except:
+                                continue
+                    
+                    elif action == 'complete':
+                        # Task complete
+                        await tracker.send_update(
+                            f"🎉 Task complete!\n{decision.get('reason', 'Goal achieved')}",
+                            phase="complete"
+                        )
+                        context['stuck_counter'] = 0  # Success!
+                        current_phase = 'COMPLETE'
+                        break
+                    
+                    else:
+                        logger.warning(f"Unknown action: {action}")
+                        context['stuck_counter'] += 1
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON parse error in iteration {total_iterations}: {e}")
+                    logger.error(f"Claude response was: {decision_text[:500]}")
+                    context['errors'].append(f"JSON parse error: {e}")
+                    context['stuck_counter'] += 1
+                    await tracker.send_update(f"⚠️ Failed to parse AI response. Retrying...")
+                except Exception as e:
+                    logger.error(f"Error in iteration {total_iterations}: {e}")
+                    context['errors'].append(str(e))
+                    context['stuck_counter'] += 1
+                    await tracker.send_update(f"⚠️ Error: {str(e)[:200]}")
+            
+            # End of phase iteration loop
+            
+            # Handle VERIFY phase auto-testing
+            if current_phase == 'VERIFY':
+                await tracker.send_update("🧪 Running verification tests...", phase="testing")
+                verification = await verifier.run_verification()
+                
+                if verification['all_passed']:
+                    await tracker.send_update("✅ All tests passed!")
+                    current_phase = 'PUBLISH'
+                else:
+                    await tracker.send_update(
+                        f"❌ Tests failed:\n{verification['summary'][:300]}"
+                    )
+                    context['errors'].append(f"Tests failed: {verification['summary']}")
+            
+            # Check if we should exit main loop
+            if current_phase == 'COMPLETE':
+                break
         
         # Final update
-        if iteration >= max_iterations - 1:
+        if current_phase == 'COMPLETE':
+            await tracker.send_update("✅ All phases complete!", phase="complete")
+        elif total_iterations >= max_iterations:
             await tracker.send_update(
-                f"⚠️  Reached max iterations ({max_iterations})",
+                f"⚠️ Reached max iterations ({max_iterations})",
                 phase="max_iterations"
             )
         

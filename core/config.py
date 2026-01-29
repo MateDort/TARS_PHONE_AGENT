@@ -40,8 +40,8 @@ class Config:
 
     # Claude Configuration (for programming tasks)
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-    CLAUDE_COMPLEX_MODEL = os.getenv('CLAUDE_COMPLEX_MODEL', 'claude-sonnet-4-20250514')  # Sonnet 4.5 for complex tasks
-    CLAUDE_FAST_MODEL = os.getenv('CLAUDE_FAST_MODEL', 'claude-3-5-haiku-20241022')  # Haiku 3.5 for simple tasks
+    CLAUDE_COMPLEX_MODEL = os.getenv('CLAUDE_COMPLEX_MODEL', 'claude-opus-4-20250514')  # Opus 4 for complex programming
+    CLAUDE_FAST_MODEL = os.getenv('CLAUDE_FAST_MODEL', 'claude-sonnet-4-20250514')  # Sonnet 4 for faster tasks
 
     # Agent Configuration
     AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower(
@@ -56,17 +56,7 @@ class Config:
     # Twilio uses 8kHz μ-law
     AUDIO_SAMPLE_RATE = int(os.getenv('AUDIO_SAMPLE_RATE', '8000'))
 
-    # Messaging Configuration
-    ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'
-    ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
-    # Format: whatsapp:+1234567890
-    WHATSAPP_NUMBER = os.getenv('WHATSAPP_NUMBER', 'whatsapp:+14155238886')
-
-    # Important Email Notification Configuration (deprecated - handled by KIPP)
-    # Options: call, message, both
-    IMPORTANT_EMAIL_NOTIFICATION = os.getenv('IMPORTANT_EMAIL_NOTIFICATION', 'call').lower()
-
-    # KIPP Configuration (N8N backend)
+    # KIPP Configuration (N8N backend) - Primary messaging hub
     N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', '').strip()
     # Fix common .env file issues: remove duplicate variable name if present
     if N8N_WEBHOOK_URL.startswith("N8N_WEBHOOK_URL="):
@@ -75,17 +65,23 @@ class Config:
 
     # TARS Personality Configuration (Dynamically Editable)
     HUMOR_PERCENTAGE = int(os.getenv('HUMOR_PERCENTAGE', '70'))  # Default 70%
-    HONESTY_PERCENTAGE = int(
-        os.getenv('HONESTY_PERCENTAGE', '95'))  # Default 95%
-    # Options: chatty, normal, brief
-    PERSONALITY = os.getenv('PERSONALITY', 'normal')
+    HONESTY_PERCENTAGE = int(os.getenv('HONESTY_PERCENTAGE', '95'))  # Default 95%
+    PERSONALITY = os.getenv('PERSONALITY', 'normal')  # Options: chatty, normal, brief
     NATIONALITY = os.getenv('NATIONALITY', 'British')  # Default: British
 
-    # Delivery Method Configuration
-    # Options: call, message, email, both
+    # Delivery Method Configuration (via KIPP)
+    # Options: call, discord, telegram
     REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')
-    # Options: call, message, email, both
-    CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')
+    CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'discord')
+    
+    # Channel Routing Configuration
+    LOG_CHANNEL = os.getenv('LOG_CHANNEL', 'discord')  # Where status/logs go: discord, telegram
+    CONFIRMATION_CHANNEL = os.getenv('CONFIRMATION_CHANNEL', 'telegram')  # Where confirmations go: discord, telegram
+    
+    # Programming Agent Configuration
+    PROGRAMMING_MODEL = os.getenv('PROGRAMMING_MODEL', 'opus')  # Options: opus, sonnet
+    AUTO_GIT_COMMIT = os.getenv('AUTO_GIT_COMMIT', 'true').lower() == 'true'  # Auto-commit after edits
+    AUTO_GIT_PUSH = os.getenv('AUTO_GIT_PUSH', 'false').lower() == 'true'  # Auto-push on complete
 
     # Agent Hub Configuration
     # Hard limit for concurrent calls
@@ -183,13 +179,25 @@ class Config:
                 f"PERSONALITY must be one of: {', '.join(valid_personalities)}")
 
         # Validate delivery method settings
-        valid_delivery_methods = ['call', 'message', 'email', 'both']
+        valid_delivery_methods = ['call', 'discord', 'telegram']
         if cls.REMINDER_DELIVERY.lower() not in valid_delivery_methods:
             errors.append(
                 f"REMINDER_DELIVERY must be one of: {', '.join(valid_delivery_methods)}")
         if cls.CALLBACK_REPORT.lower() not in valid_delivery_methods:
             errors.append(
                 f"CALLBACK_REPORT must be one of: {', '.join(valid_delivery_methods)}")
+        
+        # Validate channel routing settings
+        valid_channels = ['discord', 'telegram']
+        if cls.LOG_CHANNEL.lower() not in valid_channels:
+            errors.append(f"LOG_CHANNEL must be one of: {', '.join(valid_channels)}")
+        if cls.CONFIRMATION_CHANNEL.lower() not in valid_channels:
+            errors.append(f"CONFIRMATION_CHANNEL must be one of: {', '.join(valid_channels)}")
+        
+        # Validate programming model
+        valid_models = ['opus', 'sonnet']
+        if cls.PROGRAMMING_MODEL.lower() not in valid_models:
+            errors.append(f"PROGRAMMING_MODEL must be one of: {', '.join(valid_models)}")
 
         if errors:
             raise ValueError("Configuration errors:\n" +
@@ -208,12 +216,17 @@ class Config:
         cls.PERSONALITY = os.getenv('PERSONALITY', 'normal')
         cls.NATIONALITY = os.getenv('NATIONALITY', 'British')
         cls.REMINDER_DELIVERY = os.getenv('REMINDER_DELIVERY', 'call')
-        cls.CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'call')
+        cls.CALLBACK_REPORT = os.getenv('CALLBACK_REPORT', 'discord')
         cls.GEMINI_VOICE = os.getenv('GEMINI_VOICE', 'Puck')
         cls.AUTO_CALL = os.getenv('AUTO_CALL', 'false').lower() == 'true'
-        cls.ENABLE_SMS = os.getenv('ENABLE_SMS', 'true').lower() == 'true'
-        cls.ENABLE_WHATSAPP = os.getenv('ENABLE_WHATSAPP', 'true').lower() == 'true'
         cls.REMINDER_CHECK_INTERVAL = int(os.getenv('REMINDER_CHECK_INTERVAL', '60'))
+        # Channel routing
+        cls.LOG_CHANNEL = os.getenv('LOG_CHANNEL', 'discord')
+        cls.CONFIRMATION_CHANNEL = os.getenv('CONFIRMATION_CHANNEL', 'telegram')
+        # Programming settings
+        cls.PROGRAMMING_MODEL = os.getenv('PROGRAMMING_MODEL', 'opus')
+        cls.AUTO_GIT_COMMIT = os.getenv('AUTO_GIT_COMMIT', 'true').lower() == 'true'
+        cls.AUTO_GIT_PUSH = os.getenv('AUTO_GIT_PUSH', 'false').lower() == 'true'
         cls.CONVERSATION_HISTORY_LIMIT = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '10'))
         cls.MAX_FUNCTION_CALLS = int(os.getenv('MAX_FUNCTION_CALLS', '5'))
         cls.ENABLE_GOOGLE_SEARCH = os.getenv('ENABLE_GOOGLE_SEARCH', 'true').lower() == 'true'

@@ -21,7 +21,7 @@ class ConfigAgent(SubAgent):
     def __init__(self, db: Database, system_reloader_callback=None):
         super().__init__(
             name="config_agent",
-            description="Adjusts TARS settings (humor, honesty, personality, nationality, reminder delivery, callback reports)"
+            description="Adjusts TARS settings (humor, honesty, personality, voice, delivery channels, programming model, etc.)"
         )
         self.db = db
         self.system_reloader_callback = system_reloader_callback
@@ -31,16 +31,30 @@ class ConfigAgent(SubAgent):
 
         Args:
             args: {
-                "action": "set|get",
-                "setting": "humor|honesty",
-                "value": int (0-100, for set action)
+                "action": "set|get|list",
+                "setting": setting name,
+                "value": value to set
             }
         """
         action = args.get("action", "get")
         setting = args.get("setting", "").lower()
 
-        valid_settings = ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report", 
-                         "voice", "reminder_check_interval", "conversation_history_limit"]
+        valid_settings = [
+            # Personality
+            "humor", "honesty", "personality", "nationality", "voice",
+            # Delivery channels (via KIPP)
+            "reminder_delivery", "callback_report", "log_channel", "confirmation_channel",
+            # Programming
+            "programming_model", "auto_commit", "auto_push", "detailed_updates",
+            # Timing
+            "reminder_check_interval", "conversation_history_limit", "max_task_runtime", "approval_timeout",
+            # Features
+            "google_search", "call_summaries", "code_backups", "debug_mode"
+        ]
+        
+        if action == "list":
+            return await self._list_settings()
+        
         if setting not in valid_settings:
             return f"Please specify one of: {', '.join(valid_settings)}."
 
@@ -117,9 +131,9 @@ class ConfigAgent(SubAgent):
             logger.info(f"Updated nationality to {value_str}")
             return f"Nationality updated to {value_str}, sir."
 
-        # Handle reminder_delivery setting
+        # Handle reminder_delivery setting (call, discord, telegram)
         elif setting == "reminder_delivery":
-            valid_methods = ['call', 'message', 'email', 'both']
+            valid_methods = ['call', 'discord', 'telegram']
             value_str = str(value).lower()
             if value_str not in valid_methods:
                 return f"Invalid reminder delivery method. Please choose: {', '.join(valid_methods)}"
@@ -131,11 +145,12 @@ class ConfigAgent(SubAgent):
             self.db.set_config(setting_key, value_str)
 
             logger.info(f"Updated reminder delivery to {value_str}")
-            return f"Reminder delivery method updated to '{value_str}', sir."
+            channel_note = " (via KIPP)" if value_str in ['discord', 'telegram'] else ""
+            return f"Reminder delivery updated to '{value_str}'{channel_note}, sir."
 
-        # Handle callback_report setting
+        # Handle callback_report setting (call, discord, telegram)
         elif setting == "callback_report":
-            valid_methods = ['call', 'message', 'email', 'both']
+            valid_methods = ['call', 'discord', 'telegram']
             value_str = str(value).lower()
             if value_str not in valid_methods:
                 return f"Invalid callback report method. Please choose: {', '.join(valid_methods)}"
@@ -147,7 +162,195 @@ class ConfigAgent(SubAgent):
             self.db.set_config(setting_key, value_str)
 
             logger.info(f"Updated callback report to {value_str}")
-            return f"Callback report method updated to '{value_str}', sir."
+            channel_note = " (via KIPP)" if value_str in ['discord', 'telegram'] else ""
+            return f"Callback report method updated to '{value_str}'{channel_note}, sir."
+        
+        # Handle log_channel setting (discord, telegram)
+        elif setting == "log_channel":
+            valid_channels = ['discord', 'telegram']
+            value_str = str(value).lower()
+            if value_str not in valid_channels:
+                return f"Invalid log channel. Please choose: {', '.join(valid_channels)}"
+
+            setting_key = "LOG_CHANNEL"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            logger.info(f"Updated log channel to {value_str}")
+            return f"Log channel updated to '{value_str}' via KIPP, sir. Status updates will go there."
+        
+        # Handle confirmation_channel setting (discord, telegram)
+        elif setting == "confirmation_channel":
+            valid_channels = ['discord', 'telegram']
+            value_str = str(value).lower()
+            if value_str not in valid_channels:
+                return f"Invalid confirmation channel. Please choose: {', '.join(valid_channels)}"
+
+            setting_key = "CONFIRMATION_CHANNEL"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            logger.info(f"Updated confirmation channel to {value_str}")
+            return f"Confirmation channel updated to '{value_str}' via KIPP, sir. Approval requests will go there."
+        
+        # Handle programming_model setting (opus, sonnet)
+        elif setting == "programming_model":
+            valid_models = ['opus', 'sonnet']
+            value_str = str(value).lower()
+            if value_str not in valid_models:
+                return f"Invalid programming model. Please choose: {', '.join(valid_models)}"
+
+            setting_key = "PROGRAMMING_MODEL"
+            os.environ[setting_key] = value_str
+            self._update_env_file(setting_key, value_str)
+            Config.reload()
+            self.db.set_config(setting_key, value_str)
+
+            logger.info(f"Updated programming model to {value_str}")
+            model_desc = "Opus 4 (most capable)" if value_str == "opus" else "Sonnet 4 (faster)"
+            return f"Programming model updated to {model_desc}, sir."
+        
+        # Handle auto_commit setting (on/off)
+        elif setting == "auto_commit":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "AUTO_GIT_COMMIT"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated auto commit to {enabled}")
+            return f"Auto git commit {'enabled' if enabled else 'disabled'}, sir."
+        
+        # Handle auto_push setting (on/off)
+        elif setting == "auto_push":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "AUTO_GIT_PUSH"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated auto push to {enabled}")
+            return f"Auto git push {'enabled' if enabled else 'disabled'}, sir."
+        
+        # Handle detailed_updates setting (on/off)
+        elif setting == "detailed_updates":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "ENABLE_DETAILED_UPDATES"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated detailed updates to {enabled}")
+            return f"Detailed progress updates {'enabled' if enabled else 'disabled'}, sir."
+        
+        # Handle max_task_runtime setting (minutes)
+        elif setting == "max_task_runtime":
+            try:
+                value_int = int(value)
+                if value_int < 5:
+                    return "Max task runtime must be at least 5 minutes, sir."
+                if value_int > 60:
+                    return "Max task runtime cannot exceed 60 minutes, sir."
+            except (ValueError, TypeError):
+                return "Invalid runtime. Please provide a number in minutes, sir."
+
+            setting_key = "MAX_TASK_RUNTIME_MINUTES"
+            os.environ[setting_key] = str(value_int)
+            self._update_env_file(setting_key, str(value_int))
+            Config.reload()
+            self.db.set_config(setting_key, str(value_int))
+
+            logger.info(f"Updated max task runtime to {value_int} minutes")
+            return f"Max task runtime updated to {value_int} minutes, sir."
+        
+        # Handle approval_timeout setting (minutes)
+        elif setting == "approval_timeout":
+            try:
+                value_int = int(value)
+                if value_int < 1:
+                    return "Approval timeout must be at least 1 minute, sir."
+                if value_int > 30:
+                    return "Approval timeout cannot exceed 30 minutes, sir."
+            except (ValueError, TypeError):
+                return "Invalid timeout. Please provide a number in minutes, sir."
+
+            setting_key = "APPROVAL_TIMEOUT_MINUTES"
+            os.environ[setting_key] = str(value_int)
+            self._update_env_file(setting_key, str(value_int))
+            Config.reload()
+            self.db.set_config(setting_key, str(value_int))
+
+            logger.info(f"Updated approval timeout to {value_int} minutes")
+            return f"Approval timeout updated to {value_int} minutes, sir."
+        
+        # Handle google_search setting (on/off)
+        elif setting == "google_search":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "ENABLE_GOOGLE_SEARCH"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated google search to {enabled}")
+            return f"Google search {'enabled' if enabled else 'disabled'}, sir."
+        
+        # Handle call_summaries setting (on/off)
+        elif setting == "call_summaries":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "ENABLE_CALL_SUMMARIES"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated call summaries to {enabled}")
+            return f"Call summaries {'enabled' if enabled else 'disabled'}, sir."
+        
+        # Handle code_backups setting (on/off)
+        elif setting == "code_backups":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "ENABLE_CODE_BACKUPS"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated code backups to {enabled}")
+            return f"Code backups {'enabled' if enabled else 'disabled'}, sir."
+        
+        # Handle debug_mode setting (on/off)
+        elif setting == "debug_mode":
+            value_str = str(value).lower()
+            enabled = value_str in ['on', 'true', 'yes', '1', 'enabled']
+            
+            setting_key = "ENABLE_DEBUG_LOGGING"
+            os.environ[setting_key] = str(enabled).lower()
+            self._update_env_file(setting_key, str(enabled).lower())
+            Config.reload()
+            self.db.set_config(setting_key, str(enabled).lower())
+
+            logger.info(f"Updated debug mode to {enabled}")
+            return f"Debug logging {'enabled' if enabled else 'disabled'}, sir."
 
         # Handle voice setting
         elif setting == "voice":
@@ -210,38 +413,104 @@ class ConfigAgent(SubAgent):
 
     def get_valid_settings(self) -> list:
         """Get list of all valid settings that can be adjusted."""
-        return ["humor", "honesty", "personality", "nationality", "reminder_delivery", "callback_report", 
-                "voice", "reminder_check_interval", "conversation_history_limit"]
+        return [
+            # Personality
+            "humor", "honesty", "personality", "nationality", "voice",
+            # Delivery channels
+            "reminder_delivery", "callback_report", "log_channel", "confirmation_channel",
+            # Programming
+            "programming_model", "auto_commit", "auto_push", "detailed_updates",
+            # Timing
+            "reminder_check_interval", "conversation_history_limit", "max_task_runtime", "approval_timeout",
+            # Features
+            "google_search", "call_summaries", "code_backups", "debug_mode"
+        ]
+
+    async def _list_settings(self) -> str:
+        """List all current settings grouped by category."""
+        settings = [
+            "**Personality Settings:**",
+            f"  - humor: {Config.HUMOR_PERCENTAGE}%",
+            f"  - honesty: {Config.HONESTY_PERCENTAGE}%",
+            f"  - personality: {Config.PERSONALITY}",
+            f"  - nationality: {Config.NATIONALITY}",
+            f"  - voice: {Config.GEMINI_VOICE}",
+            "",
+            "**Delivery Channels (via KIPP):**",
+            f"  - reminder_delivery: {Config.REMINDER_DELIVERY}",
+            f"  - callback_report: {Config.CALLBACK_REPORT}",
+            f"  - log_channel: {Config.LOG_CHANNEL}",
+            f"  - confirmation_channel: {Config.CONFIRMATION_CHANNEL}",
+            "",
+            "**Programming Settings:**",
+            f"  - programming_model: {Config.PROGRAMMING_MODEL}",
+            f"  - auto_commit: {'on' if Config.AUTO_GIT_COMMIT else 'off'}",
+            f"  - auto_push: {'on' if Config.AUTO_GIT_PUSH else 'off'}",
+            f"  - detailed_updates: {'on' if Config.ENABLE_DETAILED_UPDATES else 'off'}",
+            f"  - code_backups: {'on' if Config.ENABLE_CODE_BACKUPS else 'off'}",
+            "",
+            "**Timing Settings:**",
+            f"  - reminder_check_interval: {Config.REMINDER_CHECK_INTERVAL}s",
+            f"  - conversation_history_limit: {Config.CONVERSATION_HISTORY_LIMIT}",
+            f"  - max_task_runtime: {Config.MAX_TASK_RUNTIME_MINUTES} min",
+            f"  - approval_timeout: {Config.APPROVAL_TIMEOUT_MINUTES} min",
+            "",
+            "**Feature Toggles:**",
+            f"  - google_search: {'on' if Config.ENABLE_GOOGLE_SEARCH else 'off'}",
+            f"  - call_summaries: {'on' if Config.ENABLE_CALL_SUMMARIES else 'off'}",
+            f"  - debug_mode: {'on' if Config.ENABLE_DEBUG_LOGGING else 'off'}",
+        ]
+        return "Here are all current settings, sir:\n\n" + "\n".join(settings)
 
     async def _get_config(self, setting: str) -> str:
         """Get current configuration value."""
         if setting == "humor":
-            value = Config.HUMOR_PERCENTAGE
-            return format_text('config_current_value', setting=setting, value=value)
+            return format_text('config_current_value', setting=setting, value=Config.HUMOR_PERCENTAGE)
         elif setting == "honesty":
-            value = Config.HONESTY_PERCENTAGE
-            return format_text('config_current_value', setting=setting, value=value)
+            return format_text('config_current_value', setting=setting, value=Config.HONESTY_PERCENTAGE)
         elif setting == "personality":
-            value = Config.PERSONALITY
-            return f"Current personality is '{value}', sir."
+            return f"Current personality is '{Config.PERSONALITY}', sir."
         elif setting == "nationality":
-            value = Config.NATIONALITY
-            return f"Current nationality is {value}, sir."
-        elif setting == "reminder_delivery":
-            value = Config.REMINDER_DELIVERY
-            return f"Current reminder delivery method is '{value}', sir."
-        elif setting == "callback_report":
-            value = Config.CALLBACK_REPORT
-            return f"Current callback report method is '{value}', sir."
+            return f"Current nationality is {Config.NATIONALITY}, sir."
         elif setting == "voice":
-            value = Config.GEMINI_VOICE
-            return f"Current voice is '{value}', sir."
+            return f"Current voice is '{Config.GEMINI_VOICE}', sir."
+        # Delivery channels
+        elif setting == "reminder_delivery":
+            return f"Reminder delivery is '{Config.REMINDER_DELIVERY}', sir."
+        elif setting == "callback_report":
+            return f"Callback report method is '{Config.CALLBACK_REPORT}', sir."
+        elif setting == "log_channel":
+            return f"Log channel is '{Config.LOG_CHANNEL}' (via KIPP), sir."
+        elif setting == "confirmation_channel":
+            return f"Confirmation channel is '{Config.CONFIRMATION_CHANNEL}' (via KIPP), sir."
+        # Programming
+        elif setting == "programming_model":
+            model_name = "Opus 4" if Config.PROGRAMMING_MODEL == "opus" else "Sonnet 4"
+            return f"Programming model is {model_name}, sir."
+        elif setting == "auto_commit":
+            return f"Auto git commit is {'enabled' if Config.AUTO_GIT_COMMIT else 'disabled'}, sir."
+        elif setting == "auto_push":
+            return f"Auto git push is {'enabled' if Config.AUTO_GIT_PUSH else 'disabled'}, sir."
+        elif setting == "detailed_updates":
+            return f"Detailed updates are {'enabled' if Config.ENABLE_DETAILED_UPDATES else 'disabled'}, sir."
+        # Timing
         elif setting == "reminder_check_interval":
-            value = Config.REMINDER_CHECK_INTERVAL
-            return f"Current reminder check interval is {value} seconds, sir."
+            return f"Reminder check interval is {Config.REMINDER_CHECK_INTERVAL} seconds, sir."
         elif setting == "conversation_history_limit":
-            value = Config.CONVERSATION_HISTORY_LIMIT
-            return f"Current conversation history limit is {value} messages, sir."
+            return f"Conversation history limit is {Config.CONVERSATION_HISTORY_LIMIT} messages, sir."
+        elif setting == "max_task_runtime":
+            return f"Max task runtime is {Config.MAX_TASK_RUNTIME_MINUTES} minutes, sir."
+        elif setting == "approval_timeout":
+            return f"Approval timeout is {Config.APPROVAL_TIMEOUT_MINUTES} minutes, sir."
+        # Features
+        elif setting == "google_search":
+            return f"Google search is {'enabled' if Config.ENABLE_GOOGLE_SEARCH else 'disabled'}, sir."
+        elif setting == "call_summaries":
+            return f"Call summaries are {'enabled' if Config.ENABLE_CALL_SUMMARIES else 'disabled'}, sir."
+        elif setting == "code_backups":
+            return f"Code backups are {'enabled' if Config.ENABLE_CODE_BACKUPS else 'disabled'}, sir."
+        elif setting == "debug_mode":
+            return f"Debug mode is {'enabled' if Config.ENABLE_DEBUG_LOGGING else 'disabled'}, sir."
         else:
             return f"Unknown setting: {setting}"
 
@@ -1899,8 +2168,8 @@ class ProgrammerAgent(SubAgent):
         if Config.ANTHROPIC_API_KEY:
             try:
                 self.anthropic_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
-                self.complex_model = Config.CLAUDE_COMPLEX_MODEL  # claude-sonnet-4-20250514 (Sonnet 4.5)
-                self.fast_model = Config.CLAUDE_FAST_MODEL  # claude-3-5-haiku-20241022 (Haiku 3.5)
+                self.complex_model = Config.CLAUDE_COMPLEX_MODEL  # claude-opus-4 for complex programming tasks
+                self.fast_model = Config.CLAUDE_FAST_MODEL  # claude-sonnet-4 for faster tasks
                 logger.info(f"Claude client initialized with complex model: {self.complex_model}, fast model: {self.fast_model}")
             except Exception as e:
                 logger.error(f"Failed to initialize Claude client: {e}")
@@ -2959,6 +3228,175 @@ Respond with ONLY the complete file content, no explanations or markdown code bl
             return f"Pulled from {branch}: {result.get('message')}, sir."
         return f"Failed to pull: {result.get('error')}, sir."
     
+    async def _git_ensure_repo(self, project_path: str) -> str:
+        """Ensure git repository exists, create if needed.
+        
+        Args:
+            project_path: Path to project directory
+            
+        Returns:
+            Status message
+        """
+        try:
+            from pathlib import Path
+            import subprocess
+            
+            git_dir = Path(project_path) / ".git"
+            
+            if git_dir.exists():
+                logger.info(f"Git repo already exists at {project_path}")
+                return "Git repo exists"
+            
+            # Initialize new repo
+            result = subprocess.run(
+                ['git', 'init'],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"Initialized git repo at {project_path}")
+                
+                # Configure user if not set
+                subprocess.run(
+                    ['git', 'config', 'user.name', 'TARS'],
+                    cwd=project_path,
+                    capture_output=True
+                )
+                subprocess.run(
+                    ['git', 'config', 'user.email', 'tars@autonomous.ai'],
+                    cwd=project_path,
+                    capture_output=True
+                )
+                
+                # Create initial commit
+                subprocess.run(
+                    ['git', 'add', '.gitignore', '.tarsrules'],
+                    cwd=project_path,
+                    capture_output=True
+                )
+                subprocess.run(
+                    ['git', 'commit', '-m', '[INIT] Initial commit by TARS', '--allow-empty'],
+                    cwd=project_path,
+                    capture_output=True
+                )
+                
+                return f"Initialized git repo: {result.stdout}"
+            else:
+                logger.error(f"Git init failed: {result.stderr}")
+                return f"Failed to initialize git: {result.stderr}"
+                
+        except subprocess.TimeoutExpired:
+            return "Git init timed out"
+        except Exception as e:
+            logger.error(f"Error ensuring git repo: {e}")
+            return f"Error: {e}"
+    
+    async def _git_commit_smart(
+        self,
+        project_path: str,
+        message: str,
+        files: List[str] = None
+    ) -> str:
+        """Intelligent git commit with automatic staging.
+        
+        Args:
+            project_path: Path to project directory
+            message: Commit message
+            files: List of specific files to commit (None = commit all changes)
+            
+        Returns:
+            Commit status message
+        """
+        try:
+            import subprocess
+            from pathlib import Path
+            
+            # Ensure message is properly formatted
+            if not message:
+                message = "[AUTO] Automated commit by TARS"
+            
+            # Stage files
+            if files:
+                for file in files:
+                    # Convert to relative path if needed
+                    file_path = Path(file)
+                    if file_path.is_absolute():
+                        try:
+                            file_path = file_path.relative_to(Path(project_path))
+                        except ValueError:
+                            pass  # File is outside project, use as-is
+                    
+                    result = subprocess.run(
+                        ['git', 'add', str(file_path)],
+                        cwd=project_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    
+                    if result.returncode != 0:
+                        logger.warning(f"Could not stage {file_path}: {result.stderr}")
+            else:
+                # Stage all changes
+                result = subprocess.run(
+                    ['git', 'add', '-A'],
+                    cwd=project_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode != 0:
+                    logger.warning(f"Git add failed: {result.stderr}")
+            
+            # Check if there's anything to commit
+            status = subprocess.run(
+                ['git', 'status', '--porcelain'],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if not status.stdout.strip():
+                logger.info("No changes to commit")
+                return "Nothing to commit"
+            
+            # Commit
+            result = subprocess.run(
+                ['git', 'commit', '-m', message],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                # Get short hash
+                hash_result = subprocess.run(
+                    ['git', 'rev-parse', '--short', 'HEAD'],
+                    cwd=project_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
+                
+                logger.info(f"Committed {commit_hash}: {message}")
+                return f"✓ Committed [{commit_hash}]: {message}"
+            else:
+                logger.error(f"Commit failed: {result.stderr}")
+                return f"⚠️ Commit failed: {result.stderr}"
+                
+        except subprocess.TimeoutExpired:
+            return "Git commit timed out"
+        except Exception as e:
+            logger.error(f"Error in git commit: {e}")
+            return f"Error: {e}"
+    
     # Background Programming Task Methods
     
     async def start_autonomous_coding(self, args: Dict[str, Any]) -> str:
@@ -3192,24 +3630,24 @@ def get_function_declarations() -> list:
     return [
         {
             "name": "adjust_config",
-            "description": "Adjust TARS settings. Available settings: humor (0-100%), honesty (0-100%), personality (chatty/normal/brief), nationality, reminder_delivery (call/message/email/both), callback_report (call/message/email/both), voice (Puck/Kore/Charon), reminder_check_interval (seconds), conversation_history_limit (messages). Examples: 'set humor to 65%', 'make yourself more chatty', 'set personality to brief', 'become American', 'send reminders via email', 'set callback report to both', 'set voice to Kore', 'set reminder check interval to 30 seconds'",
+            "description": "Adjust TARS settings. PERSONALITY: humor (0-100%), honesty (0-100%), personality (chatty/normal/brief), nationality, voice (Puck/Kore/Charon). DELIVERY CHANNELS: reminder_delivery (call/discord/telegram), callback_report (call/discord/telegram), log_channel (discord/telegram), confirmation_channel (discord/telegram). PROGRAMMING: programming_model (opus/sonnet), auto_commit (on/off), auto_push (on/off), detailed_updates (on/off), code_backups (on/off). TIMING: reminder_check_interval (seconds), conversation_history_limit, max_task_runtime (minutes), approval_timeout (minutes). FEATURES: google_search (on/off), call_summaries (on/off), debug_mode (on/off). Use action='list' to see all settings.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Action: 'set' (change value) or 'get' (check current value)"
+                        "description": "Action: 'set' (change value), 'get' (check current value), or 'list' (show all settings)"
                     },
                     "setting": {
                         "type": "STRING",
-                        "description": "Setting to adjust: 'humor', 'honesty', 'personality', 'nationality', 'reminder_delivery', 'callback_report', 'voice', 'reminder_check_interval', or 'conversation_history_limit'"
+                        "description": "Setting to adjust. Personality: humor, honesty, personality, nationality, voice. Channels: reminder_delivery, callback_report, log_channel, confirmation_channel. Programming: programming_model, auto_commit, auto_push, detailed_updates, code_backups. Timing: reminder_check_interval, conversation_history_limit, max_task_runtime, approval_timeout. Features: google_search, call_summaries, debug_mode"
                     },
                     "value": {
                         "type": "STRING",
-                        "description": "New value. For humor/honesty: 0-100. For personality: 'chatty', 'normal', or 'brief'. For nationality: any nationality. For reminder_delivery/callback_report: 'call', 'message', 'email', or 'both'. For voice: 'Puck', 'Kore', or 'Charon'. For intervals: number in seconds. For conversation_history_limit: number of messages."
+                        "description": "New value. humor/honesty: 0-100. personality: chatty/normal/brief. voice: Puck/Kore/Charon. Delivery channels: call/discord/telegram. log/confirmation channels: discord/telegram. programming_model: opus/sonnet. Toggle settings: on/off. Intervals: number in seconds/minutes."
                     }
                 },
-                "required": ["action", "setting"]
+                "required": ["action"]
             }
         },
         {
