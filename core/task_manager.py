@@ -117,17 +117,57 @@ class BackgroundTaskManager:
         goal: str,
         project_path: str,
         session_id: str,
-        verbose_updates: Optional[bool] = None
+        timeout_minutes: int = 10
     ) -> str:
-        """DEPRECATED: Background programming tasks have been removed.
+        """Start a background programming task using Claude Code.
         
-        Use 'use_claude_code' for programming tasks instead.
-        This stub exists for backward compatibility.
+        Args:
+            goal: Programming task description
+            project_path: Project directory to work in
+            session_id: TARS session that started this
+            timeout_minutes: Timeout for the task
+        
+        Returns:
+            Task ID
         """
-        raise RuntimeError(
-            "Background programming tasks have been deprecated. "
-            "Use 'use_claude_code' for programming tasks instead."
-        )
+        if not self.queues.get(TaskType.PROGRAMMING):
+            raise RuntimeError("Programming queue not available")
+        
+        if not self.can_start_new_task():
+            active = self.get_active_task_count()
+            raise RuntimeError(f"Max tasks ({self.max_concurrent}) reached. {active} running.")
+        
+        task_id = str(uuid.uuid4())[:8]
+        
+        try:
+            job = self.queues[TaskType.PROGRAMMING].enqueue(
+                'core.background_worker.run_claude_code',
+                task_id=task_id,
+                goal=goal,
+                project_path=project_path,
+                session_id=session_id,
+                timeout_minutes=timeout_minutes,
+                job_timeout=f'{timeout_minutes + 5}m',  # Add buffer for timeout
+                result_ttl=3600,
+                job_id=f"claude-{task_id}"
+            )
+            
+            self.tasks[task_id] = {
+                'job': job,
+                'goal': goal,
+                'project_path': project_path,
+                'session_id': session_id,
+                'started_at': datetime.now(),
+                'status': 'queued',
+                'task_type': TaskType.PROGRAMMING
+            }
+            
+            logger.info(f"Started Claude Code task {task_id}: {goal[:50]}...")
+            return task_id
+            
+        except Exception as e:
+            logger.error(f"Failed to start programming task: {e}")
+            raise
     
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Get current status of a background task.

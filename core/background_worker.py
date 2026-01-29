@@ -862,3 +862,110 @@ async def run_deep_research(
             phase="research_error"
         )
         raise
+
+
+async def run_claude_code(
+    task_id: str,
+    goal: str,
+    project_path: str,
+    session_id: str,
+    timeout_minutes: int = 10
+):
+    """Run a Claude Code task in the background.
+    
+    This is called by RQ when a programming task is queued.
+    Uses Claude Code CLI for autonomous programming.
+    
+    Args:
+        task_id: Unique task identifier
+        goal: Programming task description
+        project_path: Project directory to work in
+        session_id: TARS session that started this
+        timeout_minutes: Timeout for the task
+    """
+    import shutil
+    
+    logger.info(f"Starting Claude Code task {task_id}: {goal[:50]}...")
+    
+    # Create tracker for updates
+    tracker = TaskProgressTracker(task_id, discord_updates=True)
+    
+    try:
+        await tracker.send_update(
+            f"🤖 Starting Claude Code Session\n**Project:** {project_path}\n**Goal:** {goal[:200]}",
+            phase="claude_start"
+        )
+        
+        # Find Claude Code CLI
+        claude_code_path = shutil.which("claude")
+        if not claude_code_path:
+            home_path = Path.home() / ".npm-global" / "bin" / "claude"
+            if home_path.exists():
+                claude_code_path = str(home_path)
+            else:
+                raise RuntimeError("Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code")
+        
+        # Build command
+        cmd = [
+            claude_code_path,
+            "--print",  # Non-interactive mode
+            "--output-format", "text",
+            goal
+        ]
+        
+        logger.info(f"Running Claude Code in {project_path}: {' '.join(cmd)}")
+        await tracker.send_update(f"🔧 Running Claude Code CLI...", phase="claude_running")
+        
+        # Run Claude Code
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=project_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout_minutes * 60
+            )
+            
+            if process.returncode == 0:
+                output = stdout.decode().strip()
+                if len(output) > 2000:
+                    output = output[:2000] + "\n...[truncated]"
+                
+                await tracker.send_update(
+                    f"✅ Claude Code Complete\n\n**Result:**\n```\n{output[:1500]}\n```",
+                    phase="claude_complete"
+                )
+                
+                logger.info(f"Claude Code task {task_id} completed successfully")
+                return {"status": "completed", "output": output}
+            else:
+                error = stderr.decode().strip() or stdout.decode().strip()
+                await tracker.send_update(
+                    f"❌ Claude Code Failed\n\n**Error:**\n```\n{error[:1000]}\n```",
+                    phase="claude_error"
+                )
+                
+                logger.error(f"Claude Code task {task_id} failed: {error[:200]}")
+                return {"status": "failed", "error": error}
+                
+        except asyncio.TimeoutError:
+            process.kill()
+            await tracker.send_update(
+                f"⏱️ Claude Code timed out after {timeout_minutes} minutes",
+                phase="claude_timeout"
+            )
+            
+            logger.warning(f"Claude Code task {task_id} timed out")
+            return {"status": "timeout", "error": f"Timed out after {timeout_minutes} minutes"}
+            
+    except Exception as e:
+        logger.error(f"Claude Code task {task_id} failed: {e}")
+        await tracker.send_update(
+            f"❌ Claude Code failed: {str(e)}",
+            phase="claude_error"
+        )
+        raise

@@ -2836,52 +2836,38 @@ class WebBrowserAgent(SubAgent):
             return f"Error extracting products: {str(e)}"
 
 
+
 class DeepResearchAgent(SubAgent):
     """
-    Deep Research Agent - Performs multi-step iterative research like Gemini/Perplexity/OpenAI.
+    Deep Research Agent - Uses Google's Deep Research API for comprehensive research.
     
-    Architecture (based on industry research):
-    1. PLANNING: Gemini breaks query into sub-questions
-    2. SEARCHING: Gemini with native google_search grounding (no browser scraping!)
-    3. REASONING: Gemini analyzes results, identifies knowledge gaps
-    4. ITERATION: Loop back to search for missing info
-    5. SYNTHESIS: Claude Opus generates comprehensive report
+    This leverages Google's official Deep Research Agent via the Interactions API,
+    which provides:
+    - 1M token context window
+    - 40% less hallucination than custom implementations
+    - Native Google Search integration
+    - Multi-step research with automatic planning
     
-    Hybrid approach:
-    - Gemini: Planning, Searching (native google_search), Reasoning
-    - Claude Opus: Final synthesis (better at long-form writing)
-    - WebBrowser: Only for deep page extraction when needed
+    Research runs in background workers via Redis for true async execution.
     """
 
     def __init__(self, db: Database, session_manager=None):
         super().__init__(
             name="deep_research",
-            description="Conduct deep multi-step research on any topic. Uses Gemini's native Google Search for real-time data, synthesizes findings into comprehensive report."
+            description="Conduct deep multi-step research on any topic using Google's Deep Research Agent. Returns comprehensive, well-sourced reports."
         )
         self.db = db
         self.session_manager = session_manager
-        self.web_browser = WebBrowserAgent()  # For deep page extraction only
         
-        # Initialize Gemini client for search and reasoning (primary)
-        self.gemini_client = None
+        # Initialize Gemini client for Deep Research
+        self.genai_client = None
         if Config.GEMINI_API_KEY:
             try:
                 from google import genai
-                from google.genai import types
-                self.gemini_client = genai.Client(api_key=Config.GEMINI_API_KEY)
-                self.gemini_types = types
-                logger.info("DeepResearchAgent: Gemini client initialized with google_search")
+                self.genai_client = genai.Client(api_key=Config.GEMINI_API_KEY)
+                logger.info("DeepResearchAgent: Google Deep Research API initialized")
             except Exception as e:
-                logger.error(f"DeepResearchAgent: Failed to initialize Gemini: {e}")
-        
-        # Initialize Claude client for synthesis (secondary - better at long-form writing)
-        self.anthropic_client = None
-        if Config.ANTHROPIC_API_KEY:
-            try:
-                self.anthropic_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
-                logger.info("DeepResearchAgent: Claude client initialized for synthesis")
-            except Exception as e:
-                logger.error(f"DeepResearchAgent: Failed to initialize Claude: {e}")
+                logger.error(f"DeepResearchAgent: Failed to initialize Google genai: {e}")
 
     async def execute(self, args: Dict[str, Any]) -> str:
         """Execute deep research operation.
@@ -2890,32 +2876,25 @@ class DeepResearchAgent(SubAgent):
             args: {
                 "action": "research|status|cancel",
                 "goal": str - Research question/topic,
-                "max_iterations": int (default: 5),
-                "max_sources": int (default: 10),
-                "output_format": "report|summary|bullet_points",
-                "follow_up_action": "none|build_project|create_visualization",
+                "task_id": str - For status/cancel actions,
                 "_run_in_foreground": bool - Force synchronous execution (default: False)
             }
         """
         action = args.get("action", "research")
         
         if action == "research":
-            # Check routing flags:
-            # - _run_in_foreground=True: Force foreground (used by background workers internally)
-            # - _route_to_background=True: Force background (set by TaskRouter)
-            # - Default: background for research tasks (they're long-running)
+            # Check routing flags
             run_in_foreground = args.get("_run_in_foreground", False)
-            route_to_background = args.get("_route_to_background", True)  # Default to background for research
+            route_to_background = args.get("_route_to_background", True)  # Default to background
             
             if run_in_foreground:
                 # Run synchronously (used by background workers internally)
-                return await self._run_deep_research_sync(args)
+                return await self._run_google_deep_research(args)
             elif route_to_background:
                 # Queue to background workers (default behavior)
                 return await self._queue_deep_research(args)
             else:
-                # Rare case: short research in foreground
-                return await self._run_deep_research_sync(args)
+                return await self._run_google_deep_research(args)
         elif action == "status":
             return await self._get_research_status(args)
         elif action == "cancel":
@@ -2929,538 +2908,193 @@ class DeepResearchAgent(SubAgent):
         if not goal:
             return "Please provide a research goal, sir."
         
-        max_iterations = args.get("max_iterations", 5)
-        output_format = args.get("output_format", "report")
-        
-        # Get session ID from args or generate one
         session_id = args.get("_session_id", "unknown")
         
         # Check if task manager is available
         if not self.session_manager or not hasattr(self.session_manager, 'task_manager'):
             logger.warning("Task manager not available, running research in foreground")
-            return await self._run_deep_research_sync(args)
+            return await self._run_google_deep_research(args)
         
         task_manager = self.session_manager.task_manager
         if not task_manager:
             logger.warning("Task manager is None, running research in foreground")
-            return await self._run_deep_research_sync(args)
+            return await self._run_google_deep_research(args)
         
         try:
-            # Queue research to background
+            # Queue research to background workers
             task_id = task_manager.start_research_task(
                 goal=goal,
                 session_id=session_id,
-                max_iterations=max_iterations,
-                output_format=output_format
+                max_iterations=5,  # Not used by Google Deep Research, but kept for compatibility
+                output_format="report"
             )
             
-            logger.info(f"Deep research queued to background: task_id={task_id}, goal={goal[:50]}...")
+            logger.info(f"Google Deep Research queued: task_id={task_id}, goal={goal[:50]}...")
             
             return (
                 f"Deep research started in the background, sir. Task ID: {task_id}. "
-                f"I'll notify you when it's complete. You can ask 'what's the status of research {task_id}' "
-                f"or continue with other tasks."
+                f"Google's Deep Research agent is now working on this. "
+                f"I'll send the results to your email when complete."
             )
             
         except Exception as e:
             logger.error(f"Failed to queue research task: {e}")
-            # Fall back to synchronous execution
             logger.warning("Falling back to foreground research")
-            return await self._run_deep_research_sync(args)
+            return await self._run_google_deep_research(args)
 
-    async def _run_deep_research_sync(self, args: Dict[str, Any]) -> str:
-        """Run deep research process synchronously (used by background workers)."""
+    async def _run_google_deep_research(self, args: Dict[str, Any]) -> str:
+        """Run Google Deep Research synchronously.
+        
+        Uses Google's Interactions API with the deep-research-pro-preview agent.
+        """
         goal = args.get("goal")
         if not goal:
             return "Please provide a research goal, sir."
         
-        max_iterations = args.get("max_iterations", 5)
-        max_sources = args.get("max_sources", 10)
-        output_format = args.get("output_format", "report")
+        if not self.genai_client:
+            return "Google Deep Research API not configured. Please set GEMINI_API_KEY."
         
-        if not self.gemini_client:
-            return "Deep research requires Gemini API key for native Google Search, sir."
-        
-        if not self.anthropic_client:
-            logger.warning("Claude not available - will use Gemini for synthesis too")
-        
-        # Research context
-        context = {
-            "goal": goal,
-            "sub_questions": [],
-            "sources": [],
-            "findings": [],
-            "knowledge_gaps": [],
-            "iteration": 0
-        }
+        logger.info(f"Starting Google Deep Research: {goal[:100]}...")
         
         try:
-            # Phase 1: PLANNING - Break into sub-questions
-            await self._send_progress("Starting deep research", f"Goal: {goal}")
-            context["sub_questions"] = await self._generate_sub_questions(goal)
-            await self._send_progress("Research plan created", f"Generated {len(context['sub_questions'])} sub-questions")
+            # Start the research using Google's Deep Research agent
+            interaction = self.genai_client.interactions.create(
+                input=goal,
+                agent='deep-research-pro-preview-12-2025',
+                background=True  # Required for long-running research
+            )
             
-            # Phase 2-4: SEARCH-REASON-ITERATE loop
-            for iteration in range(max_iterations):
-                context["iteration"] = iteration + 1
+            interaction_id = interaction.id
+            logger.info(f"Google Deep Research started: interaction_id={interaction_id}")
+            
+            # Poll for results (max 15 minutes)
+            import time
+            max_wait = 15 * 60  # 15 minutes
+            poll_interval = 10  # seconds
+            elapsed = 0
+            
+            while elapsed < max_wait:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
                 
-                # Search for current knowledge gaps or sub-questions
-                questions_to_search = context["knowledge_gaps"] if context["knowledge_gaps"] else context["sub_questions"]
+                # Check status
+                result = self.genai_client.interactions.get(interaction_id)
                 
-                if not questions_to_search:
-                    break
-                
-                await self._send_progress(f"Iteration {iteration + 1}/{max_iterations}", f"Searching for {len(questions_to_search)} questions")
-                
-                # Search and extract for each question
-                for question in questions_to_search[:3]:  # Max 3 per iteration
-                    if len(context["sources"]) >= max_sources:
-                        break
+                if result.status == "completed":
+                    # Extract the research report
+                    report = result.outputs[-1].text if result.outputs else "No output generated"
                     
-                    # Search the web
-                    search_results = await self._search_web(question)
+                    logger.info(f"Google Deep Research completed: {len(report)} chars")
                     
-                    # Browse top results (or use pre-extracted content from Gemini)
-                    for result in search_results[:2]:  # Top 2 results per question
-                        page_content = await self._browse_and_extract(result["url"], result)
-                        if page_content:
-                            context["sources"].append({
-                                "url": result["url"],
-                                "title": result.get("title", ""),
-                                "content": page_content[:5000]  # Limit content size
-                            })
-                            context["findings"].append({
-                                "question": question,
-                                "source": result["url"],
-                                "content": page_content[:2000]
-                            })
-                
-                # Reason about findings and identify gaps
-                context["knowledge_gaps"] = await self._identify_knowledge_gaps(context)
-                
-                if not context["knowledge_gaps"]:
-                    await self._send_progress("Research complete", "All questions answered")
-                    break
-                
-                await self._send_progress(f"Identified {len(context['knowledge_gaps'])} gaps", "Continuing research...")
-            
-            # Phase 5: SYNTHESIS - Generate report
-            report = await self._synthesize_report(context, output_format)
-            
-            # Save report
-            await self._save_report(goal, report, context)
-            
-            # Handle follow-up action
-            follow_up = args.get("follow_up_action", "none")
-            if follow_up == "build_project":
-                return report + "\n\n[Follow-up: Ready to build project based on research. Say 'build it' to proceed.]"
-            elif follow_up == "create_visualization":
-                return report + "\n\n[Follow-up: Ready to create visualization. Say 'visualize it' to proceed.]"
-            
-            return report
-            
-        except Exception as e:
-            logger.error(f"Deep research error: {e}")
-            return f"Research error: {str(e)}, sir."
-        finally:
-            # Clean up browser
-            await self.web_browser._close_browser()
-
-    async def _generate_sub_questions(self, goal: str) -> list:
-        """Use Gemini to break research goal into sub-questions."""
-        try:
-            response = self.gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=f"""Break this research goal into 3-5 specific sub-questions that would help answer it comprehensively.
-
-Research goal: {goal}
-
-Return ONLY a JSON array of questions, no other text:
-["question 1", "question 2", "question 3"]"""
-            )
-            
-            import json
-            text = response.text.strip()
-            # Extract JSON array
-            if '[' in text and ']' in text:
-                start = text.index('[')
-                end = text.rindex(']') + 1
-                return json.loads(text[start:end])
-        except Exception as e:
-            logger.error(f"Error generating sub-questions: {e}")
-        
-        return [goal]  # Fallback to original goal
-
-    async def _search_web(self, query: str) -> list:
-        """Search the web using Gemini's native google_search grounding.
-        
-        This is much better than browser scraping because:
-        - Official Google API (not scraping)
-        - Fast and reliable
-        - Returns structured data with citations
-        - No rate limiting issues
-        """
-        try:
-            # Use Gemini with google_search grounding tool
-            grounding_tool = self.gemini_types.Tool(
-                google_search=self.gemini_types.GoogleSearch()
-            )
-            config = self.gemini_types.GenerateContentConfig(
-                tools=[grounding_tool]
-            )
-            
-            response = self.gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=f"Search for information about: {query}\n\nProvide a detailed answer with facts and sources.",
-                config=config
-            )
-            
-            # Extract grounding metadata (sources/citations)
-            results = []
-            
-            # The response includes grounding chunks with source URLs
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                
-                # Get grounding metadata if available
-                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
-                    grounding = candidate.grounding_metadata
+                    # Send to email via KIPP
+                    await self._send_research_results(goal, report)
                     
-                    # Extract web search results
-                    if hasattr(grounding, 'grounding_chunks'):
-                        for chunk in grounding.grounding_chunks[:5]:
-                            if hasattr(chunk, 'web') and chunk.web:
-                                results.append({
-                                    "url": chunk.web.uri if hasattr(chunk.web, 'uri') else "",
-                                    "title": chunk.web.title if hasattr(chunk.web, 'title') else "",
-                                    "snippet": ""
-                                })
+                    # Return truncated result for voice
+                    if len(report) > 2000:
+                        return f"Research complete, sir! Here's a summary:\n\n{report[:2000]}\n\n[Full report sent to your email]"
+                    return f"Research complete, sir!\n\n{report}"
                     
-                    # Also get search queries that were used
-                    if hasattr(grounding, 'web_search_queries'):
-                        logger.info(f"Gemini searched for: {grounding.web_search_queries}")
+                elif result.status == "failed":
+                    error_msg = result.error if hasattr(result, 'error') else "Unknown error"
+                    logger.error(f"Google Deep Research failed: {error_msg}")
+                    return f"Research failed, sir: {error_msg}"
+                
+                # Still in progress
+                logger.debug(f"Research in progress... ({elapsed}s elapsed)")
             
-            # Add the synthesized content as a "virtual" source
-            if response.text:
-                results.insert(0, {
-                    "url": "gemini://synthesized",
-                    "title": f"Gemini Search: {query}",
-                    "snippet": response.text[:500],
-                    "content": response.text  # Full grounded response
-                })
-            
-            logger.info(f"Gemini google_search returned {len(results)} results for: {query}")
-            return results
+            return "Research timed out after 15 minutes, sir. Please try again with a more specific query."
             
         except Exception as e:
-            logger.error(f"Gemini search error for '{query}': {e}")
-            # Fallback to browser scraping if Gemini fails
-            logger.info("Falling back to browser-based search...")
-            return await self._search_web_browser_fallback(query)
-    
-    async def _search_web_browser_fallback(self, query: str) -> list:
-        """Fallback browser-based search if Gemini google_search fails."""
-        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        
-        try:
-            await self.web_browser._ensure_browser()
-            await self.web_browser._page.goto(search_url, timeout=15000)
-            
-            # Extract search results
-            results = await self.web_browser._page.evaluate("""
-                () => Array.from(document.querySelectorAll('div.g'))
-                    .slice(0, 5)
-                    .map(el => {
-                        const link = el.querySelector('a');
-                        const title = el.querySelector('h3');
-                        const snippet = el.querySelector('div[data-sncf]') || el.querySelector('.VwiC3b');
-                        return {
-                            url: link?.href || '',
-                            title: title?.textContent || '',
-                            snippet: snippet?.textContent || ''
-                        };
-                    })
-                    .filter(r => r.url && !r.url.includes('google.com'))
-            """)
-            
-            return results or []
-        except Exception as e:
-            logger.error(f"Browser search fallback error for '{query}': {e}")
-            return []
+            logger.error(f"Google Deep Research error: {e}")
+            return f"Research error: {str(e)}"
 
-    async def _browse_and_extract(self, url: str, result: dict = None) -> Optional[str]:
-        """Browse a URL and extract main content.
-        
-        For Gemini synthesized results (gemini://synthesized), returns the 
-        pre-extracted content directly without browsing.
-        """
-        # Handle Gemini synthesized results - content already extracted
-        if url.startswith("gemini://"):
-            if result and result.get("content"):
-                return result["content"]
-            return None
-        
-        # For real URLs, use browser to extract content
-        try:
-            await self.web_browser._ensure_browser()
-            await self.web_browser._page.goto(url, timeout=20000)
-            
-            # Try to get main content from various selectors
-            selectors = ["article", "main", ".content", "#content", ".post", "body"]
-            
-            for selector in selectors:
-                try:
-                    element = await self.web_browser._page.query_selector(selector)
-                    if element:
-                        text = await element.text_content()
-                        if text and len(text.strip()) > 200:
-                            # Clean up
-                            import re
-                            text = re.sub(r'\s+', ' ', text).strip()
-                            return text[:5000]
-                except:
-                    continue
-            
-            return None
-        except Exception as e:
-            logger.warning(f"Failed to browse {url}: {e}")
-            return None
-
-    async def _identify_knowledge_gaps(self, context: dict) -> list:
-        """Use Gemini to identify what's still missing from research."""
-        if not context["findings"]:
-            return context["sub_questions"]  # Haven't found anything yet
-        
-        findings_summary = "\n".join([
-            f"- {f['question']}: {f['content'][:500]}..."
-            for f in context["findings"][-5:]
-        ])
-        
-        try:
-            response = self.gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=f"""Based on this research goal and findings, identify 0-3 knowledge gaps (things still unknown).
-
-Goal: {context['goal']}
-
-Findings so far:
-{findings_summary}
-
-Return ONLY a JSON array of remaining questions, or empty array if complete:
-["gap 1", "gap 2"] or []"""
-            )
-            
-            import json
-            text = response.text.strip()
-            if '[' in text and ']' in text:
-                start = text.index('[')
-                end = text.rindex(']') + 1
-                return json.loads(text[start:end])
-        except Exception as e:
-            logger.error(f"Error identifying knowledge gaps: {e}")
-        
-        return []
-
-    async def _synthesize_report(self, context: dict, output_format: str) -> str:
-        """Synthesize findings into final report.
-        
-        Uses Claude Opus if available (better at long-form writing),
-        falls back to Gemini if Claude is not configured.
-        """
-        sources_text = "\n".join([
-            f"- {s['title']}: {s['content'][:1000]}..."
-            for s in context["sources"][:10]
-        ])
-        
-        format_instructions = {
-            "report": "Write a comprehensive multi-paragraph report with sections and citations.",
-            "summary": "Write a concise 2-3 paragraph summary of key findings.",
-            "bullet_points": "Write key findings as bullet points, grouped by theme."
-        }
-        
-        prompt = f"""Synthesize these research findings into a {output_format}.
-
-Research Goal: {context['goal']}
-
-Sources and Findings:
-{sources_text}
-
-{format_instructions.get(output_format, format_instructions['report'])}
-
-Include citations to sources where appropriate. Be comprehensive but accurate."""
-
-        # Try Claude Opus first (better at long-form writing)
-        if self.anthropic_client:
-            try:
-                response = self.anthropic_client.messages.create(
-                    model=Config.CLAUDE_COMPLEX_MODEL,  # Use Opus for synthesis
-                    max_tokens=4000,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                report = response.content[0].text
-                synthesis_model = "Claude Opus"
-            except Exception as e:
-                logger.warning(f"Claude synthesis failed, falling back to Gemini: {e}")
-                report = await self._synthesize_with_gemini(prompt)
-                synthesis_model = "Gemini"
-        else:
-            # Use Gemini as fallback
-            report = await self._synthesize_with_gemini(prompt)
-            synthesis_model = "Gemini"
-        
-        # Add metadata
-        report += f"\n\n---\n**Research Metadata:**\n"
-        report += f"- Sources consulted: {len(context['sources'])}\n"
-        report += f"- Iterations: {context['iteration']}\n"
-        report += f"- Sub-questions answered: {len(context['sub_questions'])}\n"
-        report += f"- Search engine: Gemini with Google Search grounding\n"
-        report += f"- Synthesis model: {synthesis_model}\n"
-        
-        return report
-    
-    async def _synthesize_with_gemini(self, prompt: str) -> str:
-        """Fallback synthesis using Gemini."""
-        try:
-            response = self.gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            logger.error(f"Gemini synthesis failed: {e}")
-            return f"Error synthesizing report: {str(e)}"
-
-    async def _save_report(self, goal: str, report: str, context: dict):
-        """Save research report to file AND send via Discord + Gmail."""
-        from pathlib import Path
-        from datetime import datetime
-        
-        # Create filename from goal
-        safe_goal = "".join(c for c in goal[:50] if c.isalnum() or c in " -_").strip().replace(" ", "_")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"research_{safe_goal}_{timestamp}.md"
-        
-        report_path = Path(Config.TARS_ROOT if hasattr(Config, 'TARS_ROOT') else '.') / ".tars_docs" / filename
-        report_path.parent.mkdir(exist_ok=True)
-        
-        # Build full report content
-        full_report = f"# Research Report: {goal}\n\n"
-        full_report += f"*Generated: {datetime.now().isoformat()}*\n\n"
-        full_report += report
-        full_report += "\n\n## Sources\n\n"
-        for s in context["sources"]:
-            full_report += f"- [{s['title']}]({s['url']})\n"
-        
-        # Save to file
-        with open(report_path, "w") as f:
-            f.write(full_report)
-        
-        logger.info(f"Research report saved: {report_path}")
-        
-        # Send to Discord AND Gmail via KIPP
-        await self._send_research_results(goal, report, context, str(report_path))
-
-    async def _send_progress(self, title: str, message: str):
-        """Send progress update to Discord via KIPP."""
-        try:
-            import aiohttp
-            webhook_url = Config.N8N_WEBHOOK_URL
-            if not webhook_url:
-                return
-            
-            payload = {
-                "target": "discord",
-                "source": "deep_research",
-                "routing_instruction": f"Send to {Config.LOG_CHANNEL}",
-                "message": f"**{title}**\n{message}"
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                await session.post(webhook_url, json=payload, timeout=10)
-        except Exception as e:
-            logger.warning(f"Failed to send progress update: {e}")
-
-    async def _send_research_results(self, goal: str, report: str, context: dict, file_path: str):
-        """Send completed research results via email only (full report).
-        
-        Discord has a 2000 character limit, so we only send the full report via email.
-        
-        Args:
-            goal: Original research goal
-            report: Generated report text
-            context: Research context with sources
-            file_path: Path to saved report file
-        """
+    async def _send_research_results(self, goal: str, report: str):
+        """Send research results via KIPP to email."""
         import aiohttp
-        from datetime import datetime
         
         webhook_url = Config.N8N_WEBHOOK_URL
         if not webhook_url:
-            logger.warning("N8N webhook not configured - cannot send research results")
+            logger.warning("N8N webhook not configured - cannot send research to email")
             return
         
-        sources_count = len(context.get("sources", []))
-        iterations = context.get("iteration", 0)
-        
-        # Build full email for Gmail (complete report)
-        email_subject = f"TARS Research Report: {goal[:50]}"
+        email_subject = f"TARS Research: {goal[:50]}"
         email_body = f"""
 <h2>Deep Research Report</h2>
 <p><strong>Topic:</strong> {goal}</p>
 <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
-<p><strong>Sources consulted:</strong> {sources_count}</p>
-<p><strong>Iterations:</strong> {iterations}</p>
+<p><em>Powered by Google Deep Research</em></p>
 <hr>
 
-<h3>Report</h3>
-<div style="white-space: pre-wrap; font-family: sans-serif; line-height: 1.6;">
+<div style="white-space: pre-wrap; font-family: sans-serif;">
 {report}
 </div>
 
-<h3>Sources ({sources_count})</h3>
-<ul>
-"""
-        for s in context.get("sources", []):
-            title = s.get("title", s.get("url", "Unknown"))
-            url = s.get("url", "#")
-            email_body += f'<li><a href="{url}">{title}</a></li>\n'
-        
-        email_body += """
-</ul>
-
 <hr>
-<p><em>Generated by TARS Deep Research Agent</em></p>
-<p><em>Full report also saved locally to: """ + file_path + """</em></p>
+<p><em>Generated by TARS using Google Deep Research Agent</em></p>
 """
+        
+        payload = {
+            "target": "gmail",
+            "source": "deep_research",
+            "message_type": "research_report",
+            "routing_instruction": "send_via_gmail",
+            "to": "matedort1@gmail.com",
+            "subject": email_subject,
+            "body": email_body,
+            "message": f"Research report for: {goal}"
+        }
         
         try:
             async with aiohttp.ClientSession() as session:
-                # Send full report to Gmail only (no Discord - 2000 char limit)
-                gmail_payload = {
-                    "target": "gmail",
-                    "source": "deep_research", 
-                    "message_type": "research_report",
-                    "routing_instruction": "send_via_gmail",
-                    "to": "matedort1@gmail.com",
-                    "subject": email_subject,
-                    "body": email_body,
-                    "message": f"Research report for: {goal}"
-                }
-                await session.post(webhook_url, json=gmail_payload, timeout=30)
-                logger.info(f"Research results sent to matedort1@gmail.com via KIPP")
-                
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Research report sent to email via KIPP")
+                    else:
+                        logger.warning(f"KIPP webhook returned {response.status}")
         except Exception as e:
-            logger.error(f"Failed to send research results via KIPP: {e}")
+            logger.error(f"Failed to send research to email: {e}")
 
     async def _get_research_status(self, args: Dict[str, Any]) -> str:
         """Get status of ongoing research."""
-        # TODO: Implement status tracking when running in background
-        return "Research status tracking not yet implemented for background mode, sir."
+        task_id = args.get("task_id")
+        if not task_id:
+            return "Please provide a task ID to check status, sir."
+        
+        if not self.session_manager or not hasattr(self.session_manager, 'task_manager'):
+            return "Task manager not available, sir."
+        
+        task_manager = self.session_manager.task_manager
+        if not task_manager:
+            return "Task manager not available, sir."
+        
+        try:
+            status = task_manager.get_task_status(task_id)
+            return f"Research task {task_id}: {status.get('status', 'unknown')}"
+        except Exception as e:
+            return f"Could not get status: {str(e)}"
 
     async def _cancel_research(self, args: Dict[str, Any]) -> str:
         """Cancel ongoing research."""
-        await self.web_browser._close_browser()
-        return "Research cancelled, sir."
+        task_id = args.get("task_id")
+        if not task_id:
+            return "Please provide a task ID to cancel, sir."
+        
+        if not self.session_manager or not hasattr(self.session_manager, 'task_manager'):
+            return "Task manager not available, sir."
+        
+        task_manager = self.session_manager.task_manager
+        if not task_manager:
+            return "Task manager not available, sir."
+        
+        try:
+            result = task_manager.cancel_task(task_id)
+            return result
+        except Exception as e:
+            return f"Could not cancel research: {str(e)}"
 
 
 class ProgrammerAgent(SubAgent):
@@ -3555,15 +3189,16 @@ class ProgrammerAgent(SubAgent):
         # Determine working directory
         work_dir = project_path or self.current_project_path or Config.TARS_ROOT
         
-        # Generate session ID
-        session_id = str(uuid.uuid4())[:8]
+        # Generate session ID (short for display, full UUID stored internally)
+        full_uuid = str(uuid.uuid4())
+        session_id = full_uuid[:8]  # Short ID for display/voice
         
         # Build Claude Code command
+        # Note: Claude CLI doesn't accept --session-id, it auto-generates session IDs
         cmd = [
             self.claude_code_path,
             "--print",  # Non-interactive mode
-            "--output-format", "stream-json",  # Get structured output for parsing
-            "--session-id", session_id,  # Track with specific session ID
+            "--output-format", "text",  # Use text format for simpler parsing
             goal  # The prompt/goal
         ]
         
@@ -3608,12 +3243,11 @@ class ProgrammerAgent(SubAgent):
                 if process.returncode == 0:
                     self.claude_sessions[session_id]["status"] = "completed"
                     output = stdout.decode().strip()
-                    # Parse stream-json output to get final result
-                    result_text = self._parse_stream_json_output(output)
-                    if len(result_text) > 2000:
-                        result_text = result_text[:2000] + "\n...[truncated]"
+                    # Text format is already readable
+                    if len(output) > 2000:
+                        output = output[:2000] + "\n...[truncated]"
                     logger.info(f"Claude Code session {session_id} completed successfully")
-                    return f"Claude Code completed:\n\n{result_text}"
+                    return f"Claude Code completed:\n\n{output}"
                 else:
                     self.claude_sessions[session_id]["status"] = "failed"
                     error = stderr.decode().strip() or stdout.decode().strip()
@@ -3633,6 +3267,74 @@ class ProgrammerAgent(SubAgent):
                 self.claude_sessions[session_id]["status"] = "error"
             logger.error(f"Claude Code execution error: {e}")
             return f"Error running Claude Code: {str(e)}"
+
+    async def _queue_claude_code_task(
+        self,
+        goal: str,
+        project_path: str,
+        session_id: str,
+        timeout_minutes: int = 10
+    ) -> str:
+        """Queue Claude Code task to background workers via Redis.
+        
+        This enables true background execution in a separate worker process.
+        
+        Args:
+            goal: Programming task description
+            project_path: Project directory to work in
+            session_id: TARS session that started this
+            timeout_minutes: Timeout for the task
+            
+        Returns:
+            Status message with task ID
+        """
+        # Check if task manager is available
+        if not self.session_manager or not hasattr(self.session_manager, 'task_manager'):
+            logger.warning("Task manager not available, running Claude Code in foreground")
+            return await self.execute_with_claude_code(
+                goal=goal,
+                project_path=project_path,
+                timeout_minutes=timeout_minutes,
+                background=True  # Still use async subprocess
+            )
+        
+        task_manager = self.session_manager.task_manager
+        if not task_manager:
+            logger.warning("Task manager is None, running Claude Code in foreground")
+            return await self.execute_with_claude_code(
+                goal=goal,
+                project_path=project_path,
+                timeout_minutes=timeout_minutes,
+                background=True
+            )
+        
+        try:
+            # Queue to Redis workers
+            task_id = task_manager.start_programming_task(
+                goal=goal,
+                project_path=project_path,
+                session_id=session_id,
+                timeout_minutes=timeout_minutes
+            )
+            
+            logger.info(f"Claude Code queued to background workers: task_id={task_id}, goal={goal[:50]}...")
+            
+            return (
+                f"Claude Code task queued to background workers, sir. Task ID: {task_id}. "
+                f"I'll work on this in the background while you continue with other things. "
+                f"You can ask 'what's the status of task {task_id}' to check progress."
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to queue Claude Code task: {e}")
+            # Fall back to in-process execution
+            logger.warning("Falling back to in-process Claude Code execution")
+            return await self.execute_with_claude_code(
+                goal=goal,
+                project_path=project_path,
+                timeout_minutes=timeout_minutes,
+                background=True
+            )
 
     def _parse_stream_json_output(self, output: str) -> str:
         """Parse stream-json output from Claude Code to extract readable result."""
@@ -3987,11 +3689,29 @@ class ProgrammerAgent(SubAgent):
             goal = args.get('goal', args.get('task', ''))
             if not goal:
                 return "Please provide a goal for Claude Code, sir."
-            return await self.execute_with_claude_code(
-                goal=goal,
-                project_path=args.get('project_path'),
-                timeout_minutes=args.get('timeout', 10)
-            )
+            
+            # Check if TaskRouter wants this in background workers
+            route_to_background = args.get('_route_to_background', False)
+            background = args.get('background', False)
+            project_path = args.get('project_path') or self.current_project_path or Config.TARS_ROOT
+            timeout_minutes = args.get('timeout', 10)
+            
+            if route_to_background:
+                # Queue to Redis workers for true background execution
+                return await self._queue_claude_code_task(
+                    goal=goal,
+                    project_path=project_path,
+                    session_id=args.get('_session_id', 'unknown'),
+                    timeout_minutes=timeout_minutes
+                )
+            else:
+                # Run directly (with optional async background mode)
+                return await self.execute_with_claude_code(
+                    goal=goal,
+                    project_path=project_path,
+                    timeout_minutes=timeout_minutes,
+                    background=background
+                )
         
         # Route based on action type first, then parameters
         # Claude Code for complex programming tasks
