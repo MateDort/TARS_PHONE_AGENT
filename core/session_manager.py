@@ -1339,7 +1339,7 @@ class SessionManager:
         return session
 
     async def _generate_and_send_call_summary(self, session: AgentSession):
-        """Generate AI-powered call summary and send to Gmail."""
+        """Generate AI-powered call summary and send via Telegram via KIPP."""
         try:
             # Get conversation from call
             conversations = self.db.get_conversations_by_call_sid(session.call_sid)
@@ -1357,9 +1357,9 @@ class SessionManager:
             # Use Gemini to generate summary
             summary = await self._generate_summary_with_ai(conversation_text, session)
 
-            # Send to Gmail console
-            # Call summaries now handled by KIPP if needed
-            logger.info(f"Call summary generated for {session.session_name}")
+            # Send to Telegram via KIPP (call summaries always go to Telegram)
+            await self._send_call_summary_via_kipp(session, summary)
+            logger.info(f"Call summary generated and sent for {session.session_name}")
 
         except Exception as e:
             logger.error(f"Error generating call summary: {e}")
@@ -1389,7 +1389,7 @@ Keep it brief and actionable (3-5 sentences max)."""
 
         try:
             response = await client.aio.models.generate_content(
-                model="models/gemini-2.0-flash-exp",
+                model="gemini-2.0-flash",
                 contents=[types.Content(parts=[types.Part(text=prompt)], role="user")],
                 config=types.GenerateContentConfig(temperature=0.3)
             )
@@ -1405,3 +1405,61 @@ Keep it brief and actionable (3-5 sentences max)."""
             return "Summary not available."
         finally:
             client.close()
+
+    async def _send_call_summary_via_kipp(self, session: AgentSession, summary: str):
+        """Send call summary to Telegram via KIPP webhook.
+        
+        Call summaries are always routed to Telegram (per plan requirements).
+        Programming logs go to Discord.
+        
+        Args:
+            session: The session that ended
+            summary: AI-generated call summary
+        """
+        import aiohttp
+        from datetime import datetime
+        
+        webhook_url = Config.N8N_WEBHOOK_URL
+        
+        if not webhook_url:
+            logger.warning("N8N webhook not configured - cannot send call summary")
+            return
+        
+        # Format the message for Telegram
+        call_duration = "unknown"
+        if session.created_at:
+            duration_seconds = (datetime.now() - session.created_at).total_seconds()
+            call_duration = f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s"
+        
+        message = (
+            f"📞 **Call Summary**\n\n"
+            f"**Session:** {session.session_name}\n"
+            f"**Duration:** {call_duration}\n"
+            f"**Call SID:** {session.call_sid[:8] if session.call_sid else 'N/A'}...\n\n"
+            f"**Summary:**\n{summary}"
+        )
+        
+        payload = {
+            "target": "telegram",  # Call summaries always go to Telegram
+            "routing_instruction": "send_via_telegram",  # Clear instruction for KIPP
+            "message_type": "call_summary",
+            "source": "session_manager",
+            "session_id": str(session.session_id),
+            "call_sid": session.call_sid,
+            "message": message,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as http_session:
+                async with http_session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Call summary sent to Telegram via KIPP for session {session.session_id}")
+                    else:
+                        logger.warning(f"KIPP webhook returned {response.status} for call summary")
+        except Exception as e:
+            logger.error(f"Failed to send call summary via KIPP: {e}")

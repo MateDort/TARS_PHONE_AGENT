@@ -204,6 +204,10 @@ class TARSPhoneAgent:
             "browse_web": agents.get("web_browser"),
             # Deep research agent functions
             "deep_research": agents.get("deep_research"),
+            # Self-update functions (TARS modifying itself)
+            "update_self": agents.get("programmer"),
+            # Claude Code for complex programming
+            "use_claude_code": agents.get("programmer"),
         }
 
         for declaration in declarations:

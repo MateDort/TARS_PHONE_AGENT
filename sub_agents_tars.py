@@ -2194,6 +2194,12 @@ class WebBrowserAgent(SubAgent):
                 return await self._get_page_text(args)
             elif action == "close":
                 return await self._close_browser()
+            elif action == "extract_products":
+                return await self.extract_products(args)
+            elif action == "send_links":
+                # Convenience action: get links and send to Discord
+                args["send_to_discord"] = True
+                return await self._get_links(args)
             else:
                 return f"Unknown browser action: {action}"
         except Exception as e:
@@ -2258,14 +2264,17 @@ class WebBrowserAgent(SubAgent):
             return f"Extraction error: {str(e)}"
 
     async def _take_screenshot(self, args: Dict[str, Any]) -> str:
-        """Take screenshot of page or element."""
+        """Take screenshot of page or element and optionally send to Discord."""
         await self._ensure_browser()
         
         from pathlib import Path
         from datetime import datetime
+        import base64
         
         selector = args.get("selector")
         filename = args.get("filename") or f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        send_to_discord = args.get("send_to_discord", True)  # Default: send to Discord
+        caption = args.get("caption", "")
         
         # Save to .tars_docs folder
         screenshot_path = Path(Config.TARS_ROOT if hasattr(Config, 'TARS_ROOT') else '.') / ".tars_docs" / filename
@@ -2281,9 +2290,77 @@ class WebBrowserAgent(SubAgent):
             else:
                 await self._page.screenshot(path=str(screenshot_path), full_page=args.get("full_page", False))
             
-            return f"Screenshot saved: {screenshot_path}"
+            result = f"Screenshot saved: {screenshot_path}"
+            
+            # Send to Discord via KIPP
+            if send_to_discord:
+                current_url = self._page.url if self._page else "Unknown"
+                title = await self._page.title() if self._page else "Unknown"
+                
+                # Read and encode image as base64
+                with open(screenshot_path, "rb") as img_file:
+                    image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+                
+                await self._send_screenshot_to_discord(
+                    image_base64=image_base64,
+                    filename=filename,
+                    caption=caption or f"Screenshot of: {title}",
+                    url=current_url
+                )
+                result += "\n📸 Screenshot sent to Discord!"
+            
+            return result
         except Exception as e:
             return f"Screenshot error: {str(e)}"
+
+    async def _send_screenshot_to_discord(
+        self,
+        image_base64: str,
+        filename: str,
+        caption: str = "",
+        url: str = ""
+    ):
+        """Send screenshot to Discord via KIPP webhook.
+        
+        Args:
+            image_base64: Base64-encoded image data
+            filename: Image filename
+            caption: Caption for the image
+            url: URL the screenshot is from
+        """
+        import aiohttp
+        from datetime import datetime
+        
+        webhook_url = Config.N8N_WEBHOOK_URL
+        if not webhook_url:
+            logger.warning("N8N webhook not configured - cannot send screenshot")
+            return
+        
+        # Format message with image data
+        payload = {
+            "target": "discord",
+            "routing_instruction": "send_via_discord",
+            "message_type": "screenshot",
+            "source": "web_browser",
+            "message": f"📸 **Browser Screenshot**\n\n{caption}\n\n🔗 URL: {url}",
+            "image_base64": image_base64,
+            "image_filename": filename,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Screenshot sent to Discord: {filename}")
+                    else:
+                        logger.warning(f"Failed to send screenshot to Discord: {response.status}")
+        except Exception as e:
+            logger.error(f"Error sending screenshot to Discord: {e}")
 
     async def _click_element(self, args: Dict[str, Any]) -> str:
         """Click an element on the page."""
@@ -2337,8 +2414,12 @@ class WebBrowserAgent(SubAgent):
             return f"Scroll error: {str(e)}"
 
     async def _get_links(self, args: Dict[str, Any]) -> str:
-        """Get all links from the page."""
+        """Get all links from the page and optionally send to Discord."""
         await self._ensure_browser()
+        
+        send_to_discord = args.get("send_to_discord", False)
+        filter_text = args.get("filter", "")  # Optional filter for link text
+        max_links = args.get("max_links", 20)
         
         try:
             links = await self._page.evaluate("""
@@ -2351,15 +2432,93 @@ class WebBrowserAgent(SubAgent):
             if not links:
                 return "No links found on page."
             
+            # Apply filter if provided
+            if filter_text:
+                filter_lower = filter_text.lower()
+                links = [l for l in links if filter_lower in l.get('text', '').lower()]
+            
             result = f"Found {len(links)} links:\n"
-            for link in links[:20]:
+            formatted_links = []
+            for link in links[:max_links]:
                 text = link.get('text', '')[:50] or '[no text]'
                 href = link.get('href', '')
                 result += f"  - {text}: {href}\n"
+                formatted_links.append({"text": text, "href": href})
+            
+            # Send to Discord if requested
+            if send_to_discord and formatted_links:
+                current_url = self._page.url if self._page else "Unknown"
+                title = await self._page.title() if self._page else "Unknown"
+                await self._send_links_to_discord(
+                    links=formatted_links,
+                    page_title=title,
+                    page_url=current_url
+                )
+                result += "\n🔗 Links sent to Discord!"
             
             return result
         except Exception as e:
             return f"Error getting links: {str(e)}"
+
+    async def _send_links_to_discord(
+        self,
+        links: list,
+        page_title: str = "",
+        page_url: str = "",
+        caption: str = ""
+    ):
+        """Send extracted links to Discord via KIPP webhook.
+        
+        Args:
+            links: List of {text, href} dicts
+            page_title: Title of the source page
+            page_url: URL of the source page
+            caption: Optional caption
+        """
+        import aiohttp
+        from datetime import datetime
+        
+        webhook_url = Config.N8N_WEBHOOK_URL
+        if not webhook_url:
+            logger.warning("N8N webhook not configured - cannot send links")
+            return
+        
+        # Format links as markdown
+        links_text = "\n".join([
+            f"• [{link['text'][:60]}]({link['href']})" 
+            for link in links[:15]
+        ])
+        
+        message = f"🔗 **Links Found**\n\n"
+        if caption:
+            message += f"{caption}\n\n"
+        message += f"**Source:** [{page_title}]({page_url})\n\n"
+        message += f"**Links ({len(links)}):**\n{links_text}"
+        
+        payload = {
+            "target": "discord",
+            "routing_instruction": "send_via_discord",
+            "message_type": "links",
+            "source": "web_browser",
+            "message": message,
+            "links_count": len(links),
+            "page_url": page_url,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Sent {len(links)} links to Discord")
+                    else:
+                        logger.warning(f"Failed to send links to Discord: {response.status}")
+        except Exception as e:
+            logger.error(f"Error sending links to Discord: {e}")
 
     async def _get_page_text(self, args: Dict[str, Any]) -> str:
         """Get full text content of the page."""
@@ -2395,6 +2554,200 @@ class WebBrowserAgent(SubAgent):
             self._page = None
             return "Browser closed."
         return "No browser was open."
+
+    async def send_completion_screenshot(self, success: bool = True, task_description: str = ""):
+        """Take and send a completion/failure screenshot to Discord.
+        
+        Call this at the end of a browser task to show the final state.
+        
+        Args:
+            success: Whether the task completed successfully
+            task_description: Description of what was being done
+        """
+        if not self._page:
+            return
+        
+        status_emoji = "✅" if success else "❌"
+        status_text = "COMPLETED" if success else "FAILED"
+        caption = f"{status_emoji} **Browser Task {status_text}**\n\n{task_description}"
+        
+        await self._take_screenshot({
+            "send_to_discord": True,
+            "caption": caption,
+            "filename": f"task_{'complete' if success else 'failed'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        })
+
+    async def send_products_to_discord(
+        self,
+        products: list,
+        search_query: str = "",
+        source_url: str = ""
+    ):
+        """Send product search results to Discord via KIPP.
+        
+        Args:
+            products: List of {name, price, url, ...} dicts
+            search_query: What was searched for
+            source_url: URL of the search results page
+        """
+        import aiohttp
+        from datetime import datetime
+        
+        webhook_url = Config.N8N_WEBHOOK_URL
+        if not webhook_url:
+            logger.warning("N8N webhook not configured - cannot send products")
+            return
+        
+        # Format products as markdown
+        products_text = ""
+        for i, product in enumerate(products[:10], 1):
+            name = product.get('name', 'Unknown')[:60]
+            price = product.get('price', 'N/A')
+            url = product.get('url', '')
+            
+            if url:
+                products_text += f"{i}. [{name}]({url}) - **{price}**\n"
+            else:
+                products_text += f"{i}. {name} - **{price}**\n"
+        
+        message = f"🛒 **Product Search Results**\n\n"
+        message += f"**Search:** {search_query}\n\n"
+        message += f"**Found {len(products)} products:**\n{products_text}"
+        if source_url:
+            message += f"\n\n🔗 [View on site]({source_url})"
+        
+        payload = {
+            "target": "discord",
+            "routing_instruction": "send_via_discord",
+            "message_type": "products",
+            "source": "web_browser",
+            "message": message,
+            "products_count": len(products),
+            "search_query": search_query,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Sent {len(products)} products to Discord")
+                    else:
+                        logger.warning(f"Failed to send products to Discord: {response.status}")
+        except Exception as e:
+            logger.error(f"Error sending products to Discord: {e}")
+
+    async def extract_products(self, args: Dict[str, Any]) -> str:
+        """Extract product listings from a shopping page (Amazon, eBay, etc.).
+        
+        Args:
+            args: {
+                "price_selector": CSS selector for price elements,
+                "name_selector": CSS selector for product names,
+                "link_selector": CSS selector for product links,
+                "max_price": Optional maximum price filter,
+                "send_to_discord": Whether to send results to Discord
+            }
+        """
+        await self._ensure_browser()
+        
+        # Common selectors for popular sites
+        site_selectors = {
+            "amazon": {
+                "name": ".s-title-instructions-style span, .a-text-normal",
+                "price": ".a-price .a-offscreen, .a-price-whole",
+                "link": "a.a-link-normal.s-no-outline"
+            },
+            "ebay": {
+                "name": ".s-item__title",
+                "price": ".s-item__price",
+                "link": ".s-item__link"
+            }
+        }
+        
+        # Try to detect site
+        current_url = self._page.url.lower()
+        selectors = {}
+        if "amazon" in current_url:
+            selectors = site_selectors["amazon"]
+        elif "ebay" in current_url:
+            selectors = site_selectors["ebay"]
+        else:
+            selectors = {
+                "name": args.get("name_selector", "[class*='title'], [class*='name']"),
+                "price": args.get("price_selector", "[class*='price']"),
+                "link": args.get("link_selector", "a")
+            }
+        
+        max_price = args.get("max_price")
+        send_to_discord = args.get("send_to_discord", True)
+        
+        try:
+            # Extract products using JavaScript
+            products = await self._page.evaluate(f"""
+                () => {{
+                    const names = Array.from(document.querySelectorAll("{selectors['name']}")).map(el => el.textContent?.trim());
+                    const prices = Array.from(document.querySelectorAll("{selectors['price']}")).map(el => el.textContent?.trim());
+                    const links = Array.from(document.querySelectorAll("{selectors['link']}")).map(el => el.href);
+                    
+                    const products = [];
+                    for (let i = 0; i < Math.min(names.length, 20); i++) {{
+                        if (names[i] && names[i].length > 5) {{
+                            products.push({{
+                                name: names[i],
+                                price: prices[i] || 'N/A',
+                                url: links[i] || ''
+                            }});
+                        }}
+                    }}
+                    return products;
+                }}
+            """)
+            
+            if not products:
+                return "No products found on this page."
+            
+            # Filter by max price if provided
+            if max_price:
+                import re
+                filtered = []
+                for p in products:
+                    price_str = p.get('price', '')
+                    # Extract numeric price
+                    match = re.search(r'[\d,]+\.?\d*', price_str.replace(',', ''))
+                    if match:
+                        try:
+                            price_val = float(match.group())
+                            if price_val <= max_price:
+                                filtered.append(p)
+                        except:
+                            pass
+                products = filtered
+            
+            # Format result
+            result = f"Found {len(products)} products:\n\n"
+            for i, p in enumerate(products[:10], 1):
+                result += f"{i}. {p['name'][:50]} - {p['price']}\n"
+            
+            # Send to Discord
+            if send_to_discord and products:
+                search_query = args.get("search_query", "")
+                await self.send_products_to_discord(
+                    products=products,
+                    search_query=search_query,
+                    source_url=self._page.url
+                )
+                result += "\n🛒 Products sent to Discord!"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Product extraction error: {e}")
+            return f"Error extracting products: {str(e)}"
 
 
 class DeepResearchAgent(SubAgent):
@@ -2454,13 +2807,22 @@ class DeepResearchAgent(SubAgent):
                 "max_iterations": int (default: 5),
                 "max_sources": int (default: 10),
                 "output_format": "report|summary|bullet_points",
-                "follow_up_action": "none|build_project|create_visualization"
+                "follow_up_action": "none|build_project|create_visualization",
+                "_run_in_foreground": bool - Force synchronous execution (default: False)
             }
         """
         action = args.get("action", "research")
         
         if action == "research":
-            return await self._run_deep_research(args)
+            # Check if we should queue to background (default) or run in foreground
+            run_in_foreground = args.get("_run_in_foreground", False)
+            
+            if run_in_foreground:
+                # Run synchronously (used by background workers)
+                return await self._run_deep_research_sync(args)
+            else:
+                # Queue to background workers (default behavior)
+                return await self._queue_deep_research(args)
         elif action == "status":
             return await self._get_research_status(args)
         elif action == "cancel":
@@ -2468,8 +2830,53 @@ class DeepResearchAgent(SubAgent):
         else:
             return f"Unknown action: {action}"
 
-    async def _run_deep_research(self, args: Dict[str, Any]) -> str:
-        """Run deep research process."""
+    async def _queue_deep_research(self, args: Dict[str, Any]) -> str:
+        """Queue deep research to background workers."""
+        goal = args.get("goal")
+        if not goal:
+            return "Please provide a research goal, sir."
+        
+        max_iterations = args.get("max_iterations", 5)
+        output_format = args.get("output_format", "report")
+        
+        # Get session ID from args or generate one
+        session_id = args.get("_session_id", "unknown")
+        
+        # Check if task manager is available
+        if not self.session_manager or not hasattr(self.session_manager, 'task_manager'):
+            logger.warning("Task manager not available, running research in foreground")
+            return await self._run_deep_research_sync(args)
+        
+        task_manager = self.session_manager.task_manager
+        if not task_manager:
+            logger.warning("Task manager is None, running research in foreground")
+            return await self._run_deep_research_sync(args)
+        
+        try:
+            # Queue research to background
+            task_id = task_manager.start_research_task(
+                goal=goal,
+                session_id=session_id,
+                max_iterations=max_iterations,
+                output_format=output_format
+            )
+            
+            logger.info(f"Deep research queued to background: task_id={task_id}, goal={goal[:50]}...")
+            
+            return (
+                f"Deep research started in the background, sir. Task ID: {task_id}. "
+                f"I'll notify you when it's complete. You can ask 'what's the status of research {task_id}' "
+                f"or continue with other tasks."
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to queue research task: {e}")
+            # Fall back to synchronous execution
+            logger.warning("Falling back to foreground research")
+            return await self._run_deep_research_sync(args)
+
+    async def _run_deep_research_sync(self, args: Dict[str, Any]) -> str:
+        """Run deep research process synchronously (used by background workers)."""
         goal = args.get("goal")
         if not goal:
             return "Please provide a research goal, sir."
@@ -2831,7 +3238,7 @@ Include citations to sources where appropriate. Be comprehensive but accurate.""
             return f"Error synthesizing report: {str(e)}"
 
     async def _save_report(self, goal: str, report: str, context: dict):
-        """Save research report to file."""
+        """Save research report to file AND send via Discord + Gmail."""
         from pathlib import Path
         from datetime import datetime
         
@@ -2843,15 +3250,22 @@ Include citations to sources where appropriate. Be comprehensive but accurate.""
         report_path = Path(Config.TARS_ROOT if hasattr(Config, 'TARS_ROOT') else '.') / ".tars_docs" / filename
         report_path.parent.mkdir(exist_ok=True)
         
+        # Build full report content
+        full_report = f"# Research Report: {goal}\n\n"
+        full_report += f"*Generated: {datetime.now().isoformat()}*\n\n"
+        full_report += report
+        full_report += "\n\n## Sources\n\n"
+        for s in context["sources"]:
+            full_report += f"- [{s['title']}]({s['url']})\n"
+        
+        # Save to file
         with open(report_path, "w") as f:
-            f.write(f"# Research Report: {goal}\n\n")
-            f.write(f"*Generated: {datetime.now().isoformat()}*\n\n")
-            f.write(report)
-            f.write("\n\n## Sources\n\n")
-            for s in context["sources"]:
-                f.write(f"- [{s['title']}]({s['url']})\n")
+            f.write(full_report)
         
         logger.info(f"Research report saved: {report_path}")
+        
+        # Send to Discord AND Gmail via KIPP
+        await self._send_research_results(goal, report, context, str(report_path))
 
     async def _send_progress(self, title: str, message: str):
         """Send progress update to Discord via KIPP."""
@@ -2872,6 +3286,91 @@ Include citations to sources where appropriate. Be comprehensive but accurate.""
                 await session.post(webhook_url, json=payload, timeout=10)
         except Exception as e:
             logger.warning(f"Failed to send progress update: {e}")
+
+    async def _send_research_results(self, goal: str, report: str, context: dict, file_path: str):
+        """Send completed research results via Discord AND Gmail through KIPP.
+        
+        Args:
+            goal: Original research goal
+            report: Generated report text
+            context: Research context with sources
+            file_path: Path to saved report file
+        """
+        import aiohttp
+        from datetime import datetime
+        
+        webhook_url = Config.N8N_WEBHOOK_URL
+        if not webhook_url:
+            logger.warning("N8N webhook not configured - cannot send research results")
+            return
+        
+        # Build summary for Discord (shorter)
+        sources_count = len(context.get("sources", []))
+        iterations = context.get("iteration", 0)
+        
+        discord_message = (
+            f"**Deep Research Complete**\n\n"
+            f"**Topic:** {goal}\n"
+            f"**Sources consulted:** {sources_count}\n"
+            f"**Iterations:** {iterations}\n\n"
+            f"**Summary:**\n{report[:1500]}...\n\n"
+            f"*Full report saved to:* `{file_path}`"
+        )
+        
+        # Build full email for Gmail (complete report)
+        email_subject = f"TARS Research Report: {goal[:50]}"
+        email_body = f"""
+<h2>Deep Research Report</h2>
+<p><strong>Topic:</strong> {goal}</p>
+<p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+<hr>
+
+<h3>Report</h3>
+<pre style="white-space: pre-wrap; font-family: sans-serif;">
+{report}
+</pre>
+
+<h3>Sources ({sources_count})</h3>
+<ul>
+"""
+        for s in context.get("sources", []):
+            email_body += f'<li><a href="{s["url"]}">{s.get("title", s["url"])}</a></li>\n'
+        
+        email_body += """
+</ul>
+
+<hr>
+<p><em>Generated by TARS Deep Research Agent</em></p>
+"""
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Send to Discord
+                discord_payload = {
+                    "target": "discord",
+                    "source": "deep_research",
+                    "message_type": "research_complete",
+                    "routing_instruction": "send_via_discord",
+                    "message": discord_message
+                }
+                await session.post(webhook_url, json=discord_payload, timeout=15)
+                logger.info("Research results sent to Discord via KIPP")
+                
+                # Send to Gmail (via KIPP)
+                gmail_payload = {
+                    "target": "gmail",
+                    "source": "deep_research", 
+                    "message_type": "research_report",
+                    "routing_instruction": "send_via_gmail",
+                    "subject": email_subject,
+                    "body": email_body,
+                    "message": f"Research report for: {goal}"  # Fallback text
+                }
+                await session.post(webhook_url, json=gmail_payload, timeout=15)
+                logger.info("Research results sent to Gmail via KIPP")
+                
+        except Exception as e:
+            logger.error(f"Failed to send research results via KIPP: {e}")
 
     async def _get_research_status(self, args: Dict[str, Any]) -> str:
         """Get status of ongoing research."""
@@ -2932,6 +3431,113 @@ class ProgrammerAgent(SubAgent):
             'dd ', 'mkfs', 'sudo', 'chmod', 'chown'
         ]
         # Note: Removed '>' and '>>' to allow file redirection for normal operations
+        
+        # Claude Code CLI path
+        self.claude_code_path = "/Users/matedort/.local/bin/claude"
+        self.claude_code_available = Path(self.claude_code_path).exists()
+        if self.claude_code_available:
+            logger.info("Claude Code CLI available for complex programming tasks")
+
+    async def execute_with_claude_code(
+        self,
+        goal: str,
+        project_path: Optional[str] = None,
+        timeout_minutes: int = 10
+    ) -> str:
+        """Execute complex programming task using Claude Code CLI.
+        
+        This delegates real programming work to Claude Code, which has:
+        - Extended thinking capabilities
+        - Better code understanding
+        - Built-in file editing and terminal access
+        
+        Args:
+            goal: What to build/fix/code
+            project_path: Directory to work in (optional)
+            timeout_minutes: Max execution time
+            
+        Returns:
+            Result summary from Claude Code
+        """
+        if not self.claude_code_available:
+            return "Claude Code CLI not available. Please install: npm install -g @anthropic-ai/claude-code"
+        
+        import subprocess
+        import json
+        
+        # Determine working directory
+        work_dir = project_path or self.current_project_path or Config.TARS_ROOT
+        
+        # Build Claude Code command
+        cmd = [
+            self.claude_code_path,
+            "--print",  # Non-interactive mode
+            "--output-format", "text",  # Get readable output
+            "-p", goal  # The prompt/goal
+        ]
+        
+        logger.info(f"Executing Claude Code: {goal[:100]}...")
+        logger.info(f"Working directory: {work_dir}")
+        
+        try:
+            # Run Claude Code
+            result = subprocess.run(
+                cmd,
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout_minutes * 60
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                # Truncate if too long
+                if len(output) > 2000:
+                    output = output[:2000] + "\n...[truncated]"
+                logger.info(f"Claude Code completed successfully")
+                return f"Claude Code completed:\n\n{output}"
+            else:
+                error = result.stderr.strip() or result.stdout.strip()
+                logger.error(f"Claude Code failed: {error[:500]}")
+                return f"Claude Code error: {error[:500]}"
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"Claude Code timed out after {timeout_minutes} minutes")
+            return f"Claude Code timed out after {timeout_minutes} minutes, sir."
+        except Exception as e:
+            logger.error(f"Claude Code execution error: {e}")
+            return f"Error running Claude Code: {str(e)}"
+
+    def is_complex_task(self, goal: str) -> bool:
+        """Determine if a task should use Claude Code (complex) vs light commands.
+        
+        Args:
+            goal: The task description
+            
+        Returns:
+            True if task should use Claude Code
+        """
+        # Keywords that indicate complex tasks needing Claude Code
+        complex_keywords = [
+            "build", "create", "implement", "develop", "code",
+            "fix", "debug", "refactor", "optimize", "rewrite",
+            "add feature", "new feature", "update", "modify",
+            "test", "write tests", "unit test",
+            "setup", "configure", "deploy"
+        ]
+        
+        goal_lower = goal.lower()
+        
+        # Check for complex keywords
+        for keyword in complex_keywords:
+            if keyword in goal_lower:
+                return True
+        
+        # Long goals are usually complex
+        if len(goal) > 100:
+            return True
+        
+        return False
 
     async def execute(self, args: Dict[str, Any]) -> str:
         """Execute programmer operation.
@@ -2941,9 +3547,35 @@ class ProgrammerAgent(SubAgent):
         """
         action = args.get('action', '')
         
+        # Check for function name routing (from Gemini function calls)
+        function_name = args.get('_function_name', '')
+        
+        # Route based on function name first
+        if function_name == 'update_self' or action == 'update_self':
+            return await self._handle_update_self(args)
+        elif function_name == 'use_claude_code' or action == 'use_claude_code':
+            goal = args.get('goal', args.get('task', ''))
+            if not goal:
+                return "Please provide a goal for Claude Code, sir."
+            return await self.execute_with_claude_code(
+                goal=goal,
+                project_path=args.get('project_path'),
+                timeout_minutes=args.get('timeout', 10)
+            )
+        
         # Route based on action type first, then parameters
+        # Claude Code for complex programming tasks
+        elif action == 'claude_code' or args.get('use_claude_code'):
+            goal = args.get('goal', args.get('task', ''))
+            if not goal:
+                return "Please provide a goal for Claude Code, sir."
+            return await self.execute_with_claude_code(
+                goal=goal,
+                project_path=args.get('project_path'),
+                timeout_minutes=args.get('timeout', 10)
+            )
         # Check file operations first (most specific)
-        if 'file_path' in args and action in ['read', 'edit', 'create', 'delete']:
+        elif 'file_path' in args and action in ['read', 'edit', 'create', 'delete']:
             return await self.edit_code(args)
         # Check GitHub operations
         elif action in ['clone', 'push', 'pull', 'create_repo', 'list_repos', 'init'] or 'repo_url' in args:
@@ -2980,6 +3612,61 @@ class ProgrammerAgent(SubAgent):
             return await self._get_project_info(args.get('project_name'))
         else:
             return f"Unknown project action: {action}, sir."
+
+    async def _handle_update_self(self, args: Dict[str, Any]) -> str:
+        """Handle self-update requests (TARS modifying itself).
+        
+        This uses the SelfUpdater to safely modify TARS's own code.
+        
+        Args:
+            args: {
+                "change_description": str - What to add/change
+                "target_file": str (optional) - Which file to modify
+                "run_tests": bool (optional) - Whether to run tests (default: True)
+                "auto_push": bool (optional) - Whether to push to GitHub
+            }
+        """
+        from core.self_updater import get_self_updater
+        
+        change_description = args.get('change_description', '')
+        if not change_description:
+            return "Please describe what you want me to change about myself, sir."
+        
+        target_file = args.get('target_file')
+        run_tests = args.get('run_tests', True)
+        auto_push = args.get('auto_push', Config.AUTO_GIT_PUSH)
+        
+        logger.info(f"Self-update requested: {change_description}")
+        
+        try:
+            updater = get_self_updater()
+            result = await updater.apply_feature_request(
+                feature_description=change_description,
+                target_file=target_file
+            )
+            
+            if result.success:
+                response = (
+                    f"✅ Successfully updated myself, sir!\n\n"
+                    f"**Changes:** {change_description}\n"
+                    f"**Files modified:** {', '.join(result.changes_made)}\n"
+                    f"**Tests passed:** {'Yes' if result.tests_passed else 'Skipped'}\n"
+                    f"**Commit:** {result.commit_hash or 'N/A'}\n\n"
+                    f"A restart has been requested to load the new code."
+                )
+            else:
+                response = (
+                    f"❌ Self-update failed, sir.\n\n"
+                    f"**Error:** {result.error_message}\n"
+                    f"**Rollback:** {'Applied' if result.rollback_needed else 'Not needed'}\n\n"
+                    f"The original code has been preserved."
+                )
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Self-update error: {e}")
+            return f"Error during self-update: {str(e)}"
 
     async def _list_projects(self, base_path: str) -> str:
         """List all projects in a directory."""
@@ -5008,13 +5695,13 @@ def get_function_declarations() -> list:
         # Web Browser Agent functions
         {
             "name": "browse_web",
-            "description": "Use headless browser to navigate websites, extract content, take screenshots, fill forms, or click elements. For web scraping, automation, and information extraction.",
+            "description": "Use headless browser to navigate websites, extract content, take screenshots, fill forms, click elements, or extract products. Screenshots and links can be sent to Discord. For shopping: use extract_products to find items with prices. Examples: 'go to Amazon and search for water bottles under $10', 'take a screenshot of this page and send it to me'",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {
                     "action": {
                         "type": "STRING",
-                        "description": "Browser action: navigate, extract, screenshot, click, fill, scroll, get_links, get_text, close"
+                        "description": "Browser action: navigate, extract, screenshot, click, fill, scroll, get_links, send_links (get + send to Discord), get_text, extract_products (for shopping sites), close"
                     },
                     "url": {
                         "type": "STRING",
@@ -5031,6 +5718,22 @@ def get_function_declarations() -> list:
                     "wait_for": {
                         "type": "STRING",
                         "description": "CSS selector to wait for after navigation"
+                    },
+                    "send_to_discord": {
+                        "type": "BOOLEAN",
+                        "description": "Send results (screenshot, links, products) to Discord (default: true for screenshots)"
+                    },
+                    "max_price": {
+                        "type": "NUMBER",
+                        "description": "For extract_products: filter products under this price"
+                    },
+                    "search_query": {
+                        "type": "STRING",
+                        "description": "For extract_products: what was searched for (for context in Discord message)"
+                    },
+                    "caption": {
+                        "type": "STRING",
+                        "description": "For screenshot: caption to include in Discord message"
                     }
                 },
                 "required": ["action"]
@@ -5066,6 +5769,56 @@ def get_function_declarations() -> list:
                     "follow_up_action": {
                         "type": "STRING",
                         "description": "What to do after research: none, build_project, create_visualization"
+                    }
+                },
+                "required": ["goal"]
+            }
+        },
+        # Self-Update (TARS modifying itself)
+        {
+            "name": "update_self",
+            "description": "Add a feature or fix to TARS itself. Runs safely with automatic backup and restore if tests fail. TARS can edit its own code and restart to load new features. Examples: 'add a new sub-agent for X', 'fix the bug in reminder system', 'add telegram integration'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "change_description": {
+                        "type": "STRING",
+                        "description": "What to add or change (feature description or bug fix)"
+                    },
+                    "target_file": {
+                        "type": "STRING",
+                        "description": "Which file to modify (optional - defaults to sub_agents_tars.py)"
+                    },
+                    "run_tests": {
+                        "type": "BOOLEAN",
+                        "description": "Whether to run tests before applying (default: true)"
+                    },
+                    "auto_push": {
+                        "type": "BOOLEAN",
+                        "description": "Whether to push to GitHub after success (default: from config)"
+                    }
+                },
+                "required": ["change_description"]
+            }
+        },
+        # Claude Code for complex programming
+        {
+            "name": "use_claude_code",
+            "description": "Delegate complex programming tasks to Claude Code CLI. Best for multi-file changes, debugging, refactoring, and complex implementations. Lighter tasks use built-in terminal. Examples: 'build a REST API with authentication', 'refactor the database layer', 'debug and fix all failing tests'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "goal": {
+                        "type": "STRING",
+                        "description": "Programming task to accomplish"
+                    },
+                    "project_path": {
+                        "type": "STRING",
+                        "description": "Project directory to work in (optional)"
+                    },
+                    "timeout": {
+                        "type": "INTEGER",
+                        "description": "Timeout in minutes (default: 10, max: 30)"
                     }
                 },
                 "required": ["goal"]

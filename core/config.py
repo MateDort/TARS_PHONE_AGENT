@@ -149,6 +149,23 @@ class Config:
     # Background Task Settings
     MAX_TASK_RUNTIME_MINUTES = int(os.getenv('MAX_TASK_RUNTIME_MINUTES', '15'))
     ENABLE_DETAILED_UPDATES = os.getenv('ENABLE_DETAILED_UPDATES', 'true').lower() == 'true'
+    
+    # Self-Awareness Configuration (TARS knows its own location)
+    TARS_ROOT = os.getenv('TARS_ROOT', '/Users/matedort/TARS_PHONE_AGENT')
+    TARS_GITHUB_REPO = os.getenv('TARS_GITHUB_REPO', 'MateDort/TARS')
+    TARS_GITHUB_BRANCH = os.getenv('TARS_GITHUB_BRANCH', 'N8N-automation')
+    
+    # Worker Pool Configuration
+    MAX_BACKGROUND_TASKS = int(os.getenv('MAX_BACKGROUND_TASKS', '10'))
+    WORKER_POOL_SIZE = int(os.getenv('WORKER_POOL_SIZE', '5'))
+    
+    # Security Monitor Configuration
+    SECURITY_MONITOR_ENABLED = os.getenv('SECURITY_MONITOR_ENABLED', 'true').lower() == 'true'
+    DEFAULT_RISK_THRESHOLD = os.getenv('DEFAULT_RISK_THRESHOLD', 'medium')  # low, medium, high
+    
+    # Deep Research Configuration
+    MAX_SEARCH_QUERIES = int(os.getenv('MAX_SEARCH_QUERIES', '10'))
+    RESEARCH_TIMEOUT_MINUTES = int(os.getenv('RESEARCH_TIMEOUT_MINUTES', '30'))
 
     @classmethod
     def validate(cls):
@@ -248,5 +265,18 @@ class Config:
         cls.REDIS_DB = int(os.getenv('REDIS_DB', '0'))
         cls.MAX_TASK_RUNTIME_MINUTES = int(os.getenv('MAX_TASK_RUNTIME_MINUTES', '15'))
         cls.ENABLE_DETAILED_UPDATES = os.getenv('ENABLE_DETAILED_UPDATES', 'true').lower() == 'true'
+        # Self-awareness
+        cls.TARS_ROOT = os.getenv('TARS_ROOT', '/Users/matedort/TARS_PHONE_AGENT')
+        cls.TARS_GITHUB_REPO = os.getenv('TARS_GITHUB_REPO', 'MateDort/TARS')
+        cls.TARS_GITHUB_BRANCH = os.getenv('TARS_GITHUB_BRANCH', 'N8N-automation')
+        # Worker pool
+        cls.MAX_BACKGROUND_TASKS = int(os.getenv('MAX_BACKGROUND_TASKS', '10'))
+        cls.WORKER_POOL_SIZE = int(os.getenv('WORKER_POOL_SIZE', '5'))
+        # Security monitor
+        cls.SECURITY_MONITOR_ENABLED = os.getenv('SECURITY_MONITOR_ENABLED', 'true').lower() == 'true'
+        cls.DEFAULT_RISK_THRESHOLD = os.getenv('DEFAULT_RISK_THRESHOLD', 'medium')
+        # Deep research
+        cls.MAX_SEARCH_QUERIES = int(os.getenv('MAX_SEARCH_QUERIES', '10'))
+        cls.RESEARCH_TIMEOUT_MINUTES = int(os.getenv('RESEARCH_TIMEOUT_MINUTES', '30'))
 
         return True

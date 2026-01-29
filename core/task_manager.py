@@ -12,8 +12,21 @@ from core.config import Config
 logger = logging.getLogger(__name__)
 
 
+class TaskType:
+    """Types of background tasks."""
+    PROGRAMMING = "programming"
+    RESEARCH = "research"
+    CALL = "call"
+
+
 class BackgroundTaskManager:
-    """Manages background programming tasks using Redis Queue."""
+    """Manages background tasks using Redis Queue.
+    
+    Supports up to MAX_BACKGROUND_TASKS concurrent tasks across:
+    - Programming tasks (code editing, debugging)
+    - Research tasks (deep research with Gemini/Claude)
+    - Call tasks (outbound phone calls)
+    """
     
     def __init__(self):
         """Initialize task manager with Redis connection."""
@@ -25,16 +38,73 @@ class BackgroundTaskManager:
                 decode_responses=False  # We'll decode manually
             )
             
-            self.queue = Queue('tars_programming', connection=self.redis_conn)
+            # Create queues for different task types
+            self.queues = {
+                TaskType.PROGRAMMING: Queue('tars_programming', connection=self.redis_conn),
+                TaskType.RESEARCH: Queue('tars_research', connection=self.redis_conn),
+                TaskType.CALL: Queue('tars_calls', connection=self.redis_conn),
+            }
+            self.queue = self.queues[TaskType.PROGRAMMING]  # Default queue for backward compatibility
+            
             self.tasks: Dict[str, Dict[str, Any]] = {}
+            self.max_concurrent = Config.MAX_BACKGROUND_TASKS
             
             logger.info(f"BackgroundTaskManager initialized (Redis: {Config.REDIS_HOST}:{Config.REDIS_PORT})")
+            logger.info(f"Max concurrent tasks: {self.max_concurrent}")
             
         except Exception as e:
             logger.error(f"Failed to initialize BackgroundTaskManager: {e}")
             logger.warning("Background tasks will not be available")
             self.redis_conn = None
             self.queue = None
+            self.queues = {}
+    
+    def get_active_task_count(self) -> int:
+        """Get count of currently active (running) tasks.
+        
+        Returns:
+            Number of active tasks across all queues
+        """
+        count = 0
+        for task_id, task_info in self.tasks.items():
+            try:
+                job = task_info.get('job')
+                if job and job.get_status() in ['queued', 'started']:
+                    count += 1
+            except:
+                pass
+        return count
+    
+    def can_start_new_task(self) -> bool:
+        """Check if we can start a new background task.
+        
+        Returns:
+            True if under max concurrent task limit
+        """
+        return self.get_active_task_count() < self.max_concurrent
+    
+    def get_task_count_by_type(self) -> Dict[str, int]:
+        """Get count of tasks by type.
+        
+        Returns:
+            Dict mapping task type to count
+        """
+        counts = {
+            TaskType.PROGRAMMING: 0,
+            TaskType.RESEARCH: 0,
+            TaskType.CALL: 0
+        }
+        
+        for task_id, task_info in self.tasks.items():
+            task_type = task_info.get('task_type', TaskType.PROGRAMMING)
+            try:
+                job = task_info.get('job')
+                if job and job.get_status() in ['queued', 'started']:
+                    counts[task_type] = counts.get(task_type, 0) + 1
+            except:
+                pass
+        
+        return counts
     
     def start_programming_task(
         self,
@@ -53,9 +123,20 @@ class BackgroundTaskManager:
         
         Returns:
             Task ID
+            
+        Raises:
+            RuntimeError: If Redis not available or max concurrent tasks reached
         """
         if not self.queue:
             raise RuntimeError("Task manager not initialized (Redis not available)")
+        
+        # Check concurrent task limit
+        if not self.can_start_new_task():
+            active = self.get_active_task_count()
+            raise RuntimeError(
+                f"Maximum concurrent tasks ({self.max_concurrent}) reached. "
+                f"Currently {active} tasks running. Please wait for some to complete."
+            )
         
         # Generate short task ID
         task_id = str(uuid.uuid4())[:8]
@@ -89,7 +170,8 @@ class BackgroundTaskManager:
                 'project_path': project_path,
                 'session_id': session_id,
                 'started_at': datetime.now(),
-                'status': 'queued'
+                'status': 'queued',
+                'task_type': TaskType.PROGRAMMING
             }
             
             logger.info(f"Started background task {task_id}: {goal}")
@@ -234,3 +316,81 @@ class BackgroundTaskManager:
                 logger.error(f"Error listing task {task_id}: {e}")
         
         return tasks
+    
+    def start_research_task(
+        self,
+        goal: str,
+        session_id: str,
+        max_iterations: int = 5,
+        output_format: str = "report"
+    ) -> str:
+        """Start a background research task.
+        
+        Args:
+            goal: Research topic/question
+            session_id: TARS session that started this
+            max_iterations: Max research iterations
+            output_format: Output format (report, summary, bullet_points)
+        
+        Returns:
+            Task ID
+        """
+        if not self.queues.get(TaskType.RESEARCH):
+            raise RuntimeError("Research queue not available")
+        
+        if not self.can_start_new_task():
+            active = self.get_active_task_count()
+            raise RuntimeError(f"Max tasks ({self.max_concurrent}) reached. {active} running.")
+        
+        task_id = str(uuid.uuid4())[:8]
+        
+        try:
+            job = self.queues[TaskType.RESEARCH].enqueue(
+                'core.background_worker.run_deep_research',
+                task_id=task_id,
+                goal=goal,
+                session_id=session_id,
+                max_iterations=max_iterations,
+                output_format=output_format,
+                job_timeout=f'{Config.RESEARCH_TIMEOUT_MINUTES}m',
+                result_ttl=3600,
+                job_id=f"research-{task_id}"
+            )
+            
+            self.tasks[task_id] = {
+                'job': job,
+                'goal': goal,
+                'session_id': session_id,
+                'started_at': datetime.now(),
+                'status': 'queued',
+                'task_type': TaskType.RESEARCH
+            }
+            
+            logger.info(f"Started research task {task_id}: {goal}")
+            return task_id
+            
+        except Exception as e:
+            logger.error(f"Failed to start research task: {e}")
+            raise
+    
+    def get_queue_stats(self) -> Dict[str, Any]:
+        """Get statistics about task queues.
+        
+        Returns:
+            Dict with queue statistics
+        """
+        stats = {
+            'active_tasks': self.get_active_task_count(),
+            'max_concurrent': self.max_concurrent,
+            'available_slots': self.max_concurrent - self.get_active_task_count(),
+            'by_type': self.get_task_count_by_type()
+        }
+        
+        # Add queue lengths
+        for task_type, queue in self.queues.items():
+            try:
+                stats[f'{task_type}_queue_length'] = len(queue)
+            except:
+                stats[f'{task_type}_queue_length'] = 0
+        
+        return stats

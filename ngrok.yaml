@@ -1,5 +1,10 @@
 # ngrok configuration for phone call agent
 # Run both HTTP and WebSocket tunnels from one session
+#
+# IMPORTANT: Each tunnel MUST have its own unique hostname!
+# Without explicit hostnames, both tunnels share the same domain
+# and ngrok may route HTTP POSTs to WebSocket, causing:
+#   ValueError: unsupported HTTP method; expected GET; got POST
 
 version: "2"
 authtoken: 2x9IoMEZhfG3sBdu6TCKfkBaLok_3PnC7catbAjj5Njnjx3UV
@@ -8,7 +13,8 @@ tunnels:
   web:
     proto: http
     addr: 5002
-    # This is for Flask webhooks
+    hostname: tars.ngrok.app  # Primary static domain for Flask webhooks
+    # This is for Flask webhooks (Twilio voice/status callbacks)
     request_header:
       add:
         - "ngrok-skip-browser-warning: true"
@@ -16,8 +22,13 @@ tunnels:
   websocket:
     proto: http
     addr: 5001
-    # This is for Twilio Media Streams WebSocket
+    hostname: serpentiform-stephnie-ingratiatingly.ngrok-free.dev  # Second domain for WebSocket
+    # This is for Twilio Media Streams WebSocket (wss://)
     request_header:
       add:
         - "ngrok-skip-browser-warning: true"
+
+# .env must match these hostnames:
+#   WEBHOOK_BASE_URL=https://tars.ngrok.app
+#   WEBSOCKET_URL=wss://serpentiform-stephnie-ingratiatingly.ngrok-free.dev
 

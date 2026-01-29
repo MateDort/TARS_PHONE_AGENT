@@ -1009,7 +1009,7 @@ Brief summary:"""
                 api_key=Config.GEMINI_API_KEY
             )
             response = await client.aio.models.generate_content(
-                model='gemini-2.0-flash-exp',
+                model='gemini-2.0-flash',
                 contents=prompt
             )
             return response.text.strip()

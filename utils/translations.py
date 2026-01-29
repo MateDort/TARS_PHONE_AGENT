@@ -11,7 +11,9 @@ def _load_markdown_file(filename: str) -> str:
         Content of the file, or empty string if not found
     """
     try:
-        filepath = os.path.join(os.path.dirname(__file__), filename)
+        # Look in project root (parent of utils/)
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        filepath = os.path.join(project_root, filename)
         with open(filepath, 'r', encoding='utf-8') as f:
             return f.read().strip()
     except FileNotFoundError:
