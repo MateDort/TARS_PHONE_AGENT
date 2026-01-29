@@ -2219,7 +2219,7 @@ class WebBrowserAgent(SubAgent):
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(headless=True)
             self._context = await self._browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             self._page = await self._context.new_page()
             logger.info("Headless browser initialized")
@@ -2377,7 +2377,13 @@ class WebBrowserAgent(SubAgent):
         await self._ensure_browser()
         
         try:
-            await self._page.click(selector, timeout=args.get("timeout", 10000))
+            # Try normal click first, then force click if timeout
+            try:
+                await self._page.click(selector, timeout=5000)
+            except Exception:
+                logger.warning(f"Normal click failed for {selector}, trying force click")
+                await self._page.click(selector, timeout=args.get("timeout", 10000), force=True)
+                
             return f"Clicked element: {selector}"
         except Exception as e:
             return f"Click error: {str(e)}"
@@ -2795,7 +2801,20 @@ class WebBrowserAgent(SubAgent):
                 """)
             
             if not products:
-                return "No products found on this page."
+                # Debugging: Check if we hit a captcha or anti-bot page
+                title = await self._page.title()
+                content = await self._page.content()
+                
+                if "captcha" in title.lower() or "robot check" in title.lower():
+                    logger.warning(f"Amazon Captcha detected! Title: {title}")
+                    return f"Amazon blocked the search with a Captcha check. Title: {title}"
+                
+                # If title is empty or weird, log it
+                if not title:
+                    logger.warning("Empty page title - possible block or load failure")
+                    return "Page loaded but has no title. Possibly blocked."
+                    
+                return f"No products found on this page. Title: {title}"
             
             # Filter by max price if provided
             if max_price:
@@ -3334,10 +3353,10 @@ class ComputerControlAgent(SubAgent):
         from google.genai import types
         
         response = self.genai_client.models.generate_content(
-            model="gemini-2.0-flash-exp", # Use fast vision model
+            model="gemini-2.0-flash", # Use stable flash model
             contents=[
-                types.Part.from_text(prompt),
-                types.Part.from_bytes(image_data, "image/png")
+                self.genai_types.Part(text=prompt),
+                self.genai_types.Part(inline_data=self.genai_types.Blob(data=image_data, mime_type="image/png"))
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
