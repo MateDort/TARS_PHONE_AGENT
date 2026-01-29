@@ -286,6 +286,7 @@ class TaskProgressTracker:
             "source": "deep_research",
             "message_type": "research_report",
             "routing_instruction": "send_via_gmail",
+            "to": "matedort1@gmail.com",
             "subject": email_subject,
             "body": email_body,
             "message": f"Research report for: {goal}",

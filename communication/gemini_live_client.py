@@ -673,6 +673,11 @@ Be conversational, friendly, and helpful."""
                 try:
                     # Call the handler
                     handler = self.function_handlers[fn_name]
+                    
+                    # IMPORTANT: Add function name to args so handlers know which function was called
+                    # This is needed for agents that handle multiple functions (e.g., programmer)
+                    args = dict(args) if args else {}
+                    args["_function_name"] = fn_name
 
                     # Execute handler (could be sync or async)
                     if asyncio.iscoroutinefunction(handler):
