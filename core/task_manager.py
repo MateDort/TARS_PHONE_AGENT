@@ -119,75 +119,15 @@ class BackgroundTaskManager:
         session_id: str,
         verbose_updates: Optional[bool] = None
     ) -> str:
-        """Start a new background programming task.
+        """DEPRECATED: Background programming tasks have been removed.
         
-        Args:
-            goal: What to build/fix
-            project_path: Where to work
-            session_id: TARS session that started this
-            verbose_updates: Send detailed updates (optional, uses config default)
-        
-        Returns:
-            Task ID
-            
-        Raises:
-            RuntimeError: If Redis not available or max concurrent tasks reached
+        Use 'use_claude_code' for programming tasks instead.
+        This stub exists for backward compatibility.
         """
-        if not self.queue:
-            raise RuntimeError("Task manager not initialized (Redis not available)")
-        
-        # Check concurrent task limit
-        if not self.can_start_new_task():
-            active = self.get_active_task_count()
-            raise RuntimeError(
-                f"Maximum concurrent tasks ({self.max_concurrent}) reached. "
-                f"Currently {active} tasks running. Please wait for some to complete."
-            )
-        
-        # Generate short task ID
-        task_id = str(uuid.uuid4())[:8]
-        
-        # Set verbosity
-        if verbose_updates is not None:
-            # Temporarily override config for this task
-            import os
-            original_verbose = os.getenv('ENABLE_DETAILED_UPDATES')
-            os.environ['ENABLE_DETAILED_UPDATES'] = 'true' if verbose_updates else 'false'
-        
-        try:
-            # Enqueue the task
-            job = self.queue.enqueue(
-                'core.background_worker.run_autonomous_programming',
-                task_id=task_id,
-                goal=goal,
-                project_path=project_path,
-                session_id=session_id,
-                max_iterations=50,
-                max_minutes=Config.MAX_TASK_RUNTIME_MINUTES,
-                job_timeout=f'{Config.MAX_TASK_RUNTIME_MINUTES + 2}m',  # +2 min buffer
-                result_ttl=3600,  # Keep results for 1 hour
-                job_id=task_id  # Use our task_id as job ID
-            )
-            
-            # Store task info
-            self.tasks[task_id] = {
-                'job': job,
-                'goal': goal,
-                'project_path': project_path,
-                'session_id': session_id,
-                'started_at': datetime.now(),
-                'status': 'queued',
-                'task_type': TaskType.PROGRAMMING
-            }
-            
-            logger.info(f"Started background task {task_id}: {goal}")
-            return task_id
-            
-        finally:
-            # Restore original verbosity setting
-            if verbose_updates is not None and original_verbose is not None:
-                import os
-                os.environ['ENABLE_DETAILED_UPDATES'] = original_verbose
+        raise RuntimeError(
+            "Background programming tasks have been deprecated. "
+            "Use 'use_claude_code' for programming tasks instead."
+        )
     
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Get current status of a background task.

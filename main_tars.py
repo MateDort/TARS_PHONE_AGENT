@@ -196,10 +196,6 @@ class TARSPhoneAgent:
             "execute_terminal": agents.get("programmer"),
             "edit_code": agents.get("programmer"),
             "github_operation": agents.get("programmer"),
-            # Background programming task functions
-            "start_autonomous_coding": agents.get("programmer"),
-            "check_coding_progress": agents.get("programmer"),
-            "cancel_coding_task": agents.get("programmer"),
             # Web browser agent functions
             "browse_web": agents.get("web_browser"),
             # Deep research agent functions
@@ -221,33 +217,12 @@ class TARSPhoneAgent:
                         f"Skipping function {fn_name} - agent not available")
                     continue
 
-                # Create wrapper handler based on function name
-                # Background programming task functions call methods directly
-                if fn_name == "start_autonomous_coding":
-                    def make_start_coding_handler(agent_inst):
-                        async def handler(args):
-                            return await agent_inst.start_autonomous_coding(args)
-                        return handler
-                    handler = make_start_coding_handler(agent)
-                elif fn_name == "check_coding_progress":
-                    def make_check_progress_handler(agent_inst):
-                        async def handler(args):
-                            return await agent_inst.check_coding_progress(args)
-                        return handler
-                    handler = make_check_progress_handler(agent)
-                elif fn_name == "cancel_coding_task":
-                    def make_cancel_task_handler(agent_inst):
-                        async def handler(args):
-                            return await agent_inst.cancel_coding_task(args)
-                        return handler
-                    handler = make_cancel_task_handler(agent)
-                else:
-                    # Default: route through execute() method
-                    def make_handler(agent_instance):
-                        async def handler(args):
-                            return await agent_instance.execute(args)
-                        return handler
-                    handler = make_handler(agent)
+                # Create wrapper handler - route through execute() method
+                def make_handler(agent_instance):
+                    async def handler(args):
+                        return await agent_instance.execute(args)
+                    return handler
+                handler = make_handler(agent)
 
                 # Register with Gemini client
                 self.gemini_client.register_function(declaration, handler)

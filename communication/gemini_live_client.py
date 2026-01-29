@@ -574,14 +574,13 @@ Be conversational, friendly, and helpful."""
     # Functions that can be routed to background based on TaskRouter decision
     # These use Redis Queue workers and count towards MAX_BACKGROUND_TASKS limit
     BACKGROUND_ELIGIBLE_FUNCTIONS = {
-        "start_autonomous_coding",  # Programming tasks
         "deep_research",            # Research tasks
         "manage_project",           # Project management
         "edit_code",                # Code editing
         "execute_terminal",         # Terminal commands (long-running)
         "github_operation",         # Git operations
         "browse_web",               # Web browsing tasks
-        "use_claude_code",          # Claude Code tasks
+        "use_claude_code",          # Claude Code tasks (main programming method)
     }
     
     # Functions that should ALWAYS run in foreground (instant responses)
@@ -593,8 +592,6 @@ Be conversational, friendly, and helpful."""
         "manage_reminder",
         "adjust_config",
         "send_notification",
-        "check_coding_progress",
-        "cancel_coding_task",
         "list_active_sessions",
         "get_session_info",
         "hangup_call",
@@ -733,10 +730,7 @@ Be conversational, friendly, and helpful."""
             args = {}
         
         # Build description based on function type
-        if fn_name == "start_autonomous_coding":
-            goal = args.get("goal", "")
-            return f"programming task: {goal}"
-        elif fn_name == "deep_research":
+        if fn_name == "deep_research":
             goal = args.get("goal", "")
             return f"deep research on: {goal}"
         elif fn_name == "manage_project":
