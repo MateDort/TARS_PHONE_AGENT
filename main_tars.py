@@ -204,6 +204,10 @@ class TARSPhoneAgent:
             "update_self": agents.get("programmer"),
             # Claude Code for complex programming
             "use_claude_code": agents.get("programmer"),
+            # Claude Code session management
+            "list_claude_sessions": agents.get("programmer"),
+            "get_claude_session_status": agents.get("programmer"),
+            "cancel_claude_session": agents.get("programmer"),
         }
 
         for declaration in declarations:

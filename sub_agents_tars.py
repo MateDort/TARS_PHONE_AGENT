@@ -3517,12 +3517,18 @@ class ProgrammerAgent(SubAgent):
         self.claude_code_available = Path(self.claude_code_path).exists()
         if self.claude_code_available:
             logger.info("Claude Code CLI available for complex programming tasks")
+        
+        # Track running Claude Code sessions for monitoring and cancellation
+        # Key: session_id, Value: session metadata dict
+        self.claude_sessions: Dict[str, Dict[str, Any]] = {}
+        self.claude_projects_dir = Path.home() / ".claude" / "projects"
 
     async def execute_with_claude_code(
         self,
         goal: str,
         project_path: Optional[str] = None,
-        timeout_minutes: int = 10
+        timeout_minutes: int = 10,
+        background: bool = False
     ) -> str:
         """Execute complex programming task using Claude Code CLI.
         
@@ -3535,58 +3541,402 @@ class ProgrammerAgent(SubAgent):
             goal: What to build/fix/code
             project_path: Directory to work in (optional)
             timeout_minutes: Max execution time
+            background: If True, run in background and return immediately
             
         Returns:
-            Result summary from Claude Code
+            Result summary from Claude Code (or session ID if background=True)
         """
         if not self.claude_code_available:
             return "Claude Code CLI not available. Please install: npm install -g @anthropic-ai/claude-code"
         
-        import subprocess
-        import json
+        import uuid
+        from datetime import datetime
         
         # Determine working directory
         work_dir = project_path or self.current_project_path or Config.TARS_ROOT
+        
+        # Generate session ID
+        session_id = str(uuid.uuid4())[:8]
         
         # Build Claude Code command
         cmd = [
             self.claude_code_path,
             "--print",  # Non-interactive mode
-            "--output-format", "text",  # Get readable output
-            "-p", goal  # The prompt/goal
+            "--output-format", "stream-json",  # Get structured output for parsing
+            "--session-id", session_id,  # Track with specific session ID
+            goal  # The prompt/goal
         ]
         
-        logger.info(f"Executing Claude Code: {goal[:100]}...")
+        logger.info(f"Starting Claude Code session {session_id}: {goal[:100]}...")
         logger.info(f"Working directory: {work_dir}")
         
         try:
-            # Run Claude Code
-            result = subprocess.run(
-                cmd,
+            # Create async subprocess
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
                 cwd=work_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout_minutes * 60
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
             
-            if result.returncode == 0:
-                output = result.stdout.strip()
-                # Truncate if too long
-                if len(output) > 2000:
-                    output = output[:2000] + "\n...[truncated]"
-                logger.info(f"Claude Code completed successfully")
-                return f"Claude Code completed:\n\n{output}"
-            else:
-                error = result.stderr.strip() or result.stdout.strip()
-                logger.error(f"Claude Code failed: {error[:500]}")
-                return f"Claude Code error: {error[:500]}"
+            # Track the session
+            self.claude_sessions[session_id] = {
+                "pid": process.pid,
+                "process": process,
+                "goal": goal,
+                "project_path": str(work_dir),
+                "started_at": datetime.now(),
+                "status": "running",
+                "session_id": session_id,
+                "timeout_minutes": timeout_minutes
+            }
+            
+            logger.info(f"Claude Code session {session_id} started (PID: {process.pid})")
+            
+            if background:
+                # Return immediately with session ID
+                return f"Claude Code session started in background, sir.\n\nSession ID: {session_id}\nGoal: {goal[:100]}...\n\nYou can check progress with 'list claude sessions' or 'what is Claude working on?'"
+            
+            # Wait for completion with timeout
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout_minutes * 60
+                )
                 
-        except subprocess.TimeoutExpired:
-            logger.error(f"Claude Code timed out after {timeout_minutes} minutes")
-            return f"Claude Code timed out after {timeout_minutes} minutes, sir."
+                # Update session status
+                if process.returncode == 0:
+                    self.claude_sessions[session_id]["status"] = "completed"
+                    output = stdout.decode().strip()
+                    # Parse stream-json output to get final result
+                    result_text = self._parse_stream_json_output(output)
+                    if len(result_text) > 2000:
+                        result_text = result_text[:2000] + "\n...[truncated]"
+                    logger.info(f"Claude Code session {session_id} completed successfully")
+                    return f"Claude Code completed:\n\n{result_text}"
+                else:
+                    self.claude_sessions[session_id]["status"] = "failed"
+                    error = stderr.decode().strip() or stdout.decode().strip()
+                    logger.error(f"Claude Code session {session_id} failed: {error[:500]}")
+                    return f"Claude Code error: {error[:500]}"
+                    
+            except asyncio.TimeoutError:
+                # Timeout - kill the process
+                process.kill()
+                await process.wait()
+                self.claude_sessions[session_id]["status"] = "timeout"
+                logger.error(f"Claude Code session {session_id} timed out after {timeout_minutes} minutes")
+                return f"Claude Code timed out after {timeout_minutes} minutes, sir."
+                
         except Exception as e:
+            if session_id in self.claude_sessions:
+                self.claude_sessions[session_id]["status"] = "error"
             logger.error(f"Claude Code execution error: {e}")
             return f"Error running Claude Code: {str(e)}"
+
+    def _parse_stream_json_output(self, output: str) -> str:
+        """Parse stream-json output from Claude Code to extract readable result."""
+        import json
+        
+        lines = output.strip().split('\n')
+        result_parts = []
+        
+        for line in lines:
+            try:
+                data = json.loads(line)
+                # Extract assistant messages and tool results
+                if data.get("type") == "assistant" and data.get("message"):
+                    msg = data["message"]
+                    if isinstance(msg, dict) and msg.get("content"):
+                        for block in msg.get("content", []):
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                result_parts.append(block.get("text", ""))
+                elif data.get("type") == "result":
+                    if data.get("result"):
+                        result_parts.append(str(data["result"]))
+            except json.JSONDecodeError:
+                # Plain text line
+                if line.strip():
+                    result_parts.append(line)
+        
+        return "\n".join(result_parts) if result_parts else output
+
+    async def list_claude_sessions(self, include_completed: bool = True) -> str:
+        """List all Claude Code sessions with their status.
+        
+        Args:
+            include_completed: Whether to include completed/cancelled sessions
+            
+        Returns:
+            Formatted list of sessions
+        """
+        from datetime import datetime
+        
+        # First, update status of all tracked sessions
+        for session_id, session in list(self.claude_sessions.items()):
+            process = session.get("process")
+            if process and session["status"] == "running":
+                # Check if still running
+                if process.returncode is not None:
+                    session["status"] = "completed" if process.returncode == 0 else "failed"
+        
+        # Also scan for recent sessions from Claude's project directory
+        recent_sessions = self._scan_recent_claude_sessions()
+        
+        # Merge with tracked sessions
+        all_sessions = {}
+        for session_id, session in self.claude_sessions.items():
+            all_sessions[session_id] = session
+        for session_id, session in recent_sessions.items():
+            if session_id not in all_sessions:
+                all_sessions[session_id] = session
+        
+        if not all_sessions:
+            return "No Claude Code sessions found, sir."
+        
+        # Filter if needed
+        if not include_completed:
+            all_sessions = {k: v for k, v in all_sessions.items() if v["status"] == "running"}
+        
+        if not all_sessions:
+            return "No running Claude Code sessions at the moment, sir."
+        
+        # Format output
+        result = f"**Claude Code Sessions ({len(all_sessions)}):**\n\n"
+        
+        for session_id, session in sorted(all_sessions.items(), 
+                                           key=lambda x: x[1].get("started_at", datetime.min), 
+                                           reverse=True):
+            status = session.get("status", "unknown")
+            status_emoji = {
+                "running": "🔄",
+                "completed": "✅",
+                "failed": "❌",
+                "cancelled": "⏹️",
+                "timeout": "⏰",
+                "error": "⚠️"
+            }.get(status, "❓")
+            
+            goal = session.get("goal", "Unknown")[:80]
+            started = session.get("started_at")
+            if isinstance(started, datetime):
+                started_str = started.strftime("%H:%M:%S")
+            else:
+                started_str = str(started) if started else "Unknown"
+            
+            project = Path(session.get("project_path", "")).name or "Unknown"
+            
+            result += f"{status_emoji} **{session_id}** - {status.upper()}\n"
+            result += f"   Goal: {goal}...\n"
+            result += f"   Project: {project} | Started: {started_str}\n\n"
+        
+        return result
+
+    def _scan_recent_claude_sessions(self, max_age_hours: int = 24) -> Dict[str, Dict[str, Any]]:
+        """Scan Claude's project directory for recent sessions.
+        
+        Returns:
+            Dictionary of session_id -> session info
+        """
+        from datetime import datetime, timedelta
+        import json
+        
+        sessions = {}
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        
+        if not self.claude_projects_dir.exists():
+            return sessions
+        
+        try:
+            for project_dir in self.claude_projects_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                    
+                for jsonl_file in project_dir.glob("*.jsonl"):
+                    # Check modification time
+                    try:
+                        mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+                        if mtime < cutoff:
+                            continue
+                        
+                        session_id = jsonl_file.stem
+                        if session_id.startswith("agent-"):
+                            continue  # Skip subagent files
+                        
+                        # Get first line to extract goal
+                        goal = "Unknown goal"
+                        with open(jsonl_file, 'r') as f:
+                            first_line = f.readline()
+                            try:
+                                data = json.loads(first_line)
+                                if data.get("type") == "user" and data.get("message"):
+                                    msg = data["message"]
+                                    if isinstance(msg, dict) and msg.get("content"):
+                                        goal = str(msg["content"])[:200]
+                                    elif isinstance(msg, str):
+                                        goal = msg[:200]
+                            except:
+                                pass
+                        
+                        # Derive project path from directory name
+                        project_path = project_dir.name.replace("-", "/")
+                        if project_path.startswith("/"):
+                            project_path = project_path[1:]
+                        
+                        sessions[session_id] = {
+                            "session_id": session_id,
+                            "goal": goal,
+                            "project_path": project_path,
+                            "started_at": mtime,
+                            "status": "completed",  # Assume completed if we find the file
+                            "jsonl_path": str(jsonl_file)
+                        }
+                    except Exception as e:
+                        logger.debug(f"Error reading session file {jsonl_file}: {e}")
+                        continue
+        except Exception as e:
+            logger.warning(f"Error scanning Claude sessions: {e}")
+        
+        return sessions
+
+    async def get_claude_session_status(self, session_id: str) -> str:
+        """Get detailed status of a specific Claude Code session.
+        
+        Args:
+            session_id: The session ID to check
+            
+        Returns:
+            Detailed status information
+        """
+        from datetime import datetime
+        import json
+        
+        # Check tracked sessions first
+        session = self.claude_sessions.get(session_id)
+        
+        if not session:
+            # Try to find in recent sessions
+            recent = self._scan_recent_claude_sessions()
+            session = recent.get(session_id)
+        
+        if not session:
+            return f"Session {session_id} not found, sir. Try 'list claude sessions' to see available sessions."
+        
+        status = session.get("status", "unknown")
+        goal = session.get("goal", "Unknown")
+        project_path = session.get("project_path", "Unknown")
+        started = session.get("started_at")
+        
+        if isinstance(started, datetime):
+            elapsed = datetime.now() - started
+            elapsed_str = f"{int(elapsed.total_seconds() / 60)} minutes {int(elapsed.total_seconds() % 60)} seconds"
+        else:
+            elapsed_str = "Unknown"
+        
+        result = f"**Claude Code Session: {session_id}**\n\n"
+        result += f"**Status:** {status.upper()}\n"
+        result += f"**Goal:** {goal}\n"
+        result += f"**Project:** {project_path}\n"
+        result += f"**Elapsed:** {elapsed_str}\n\n"
+        
+        # Try to get recent activity from JSONL
+        jsonl_path = session.get("jsonl_path")
+        if not jsonl_path:
+            # Try to find it
+            project_encoded = str(project_path).replace("/", "-")
+            potential_path = self.claude_projects_dir / project_encoded / f"{session_id}.jsonl"
+            if potential_path.exists():
+                jsonl_path = str(potential_path)
+        
+        if jsonl_path and Path(jsonl_path).exists():
+            recent_activity = self._get_recent_session_activity(jsonl_path)
+            if recent_activity:
+                result += f"**Recent Activity:**\n{recent_activity}\n"
+        
+        return result
+
+    def _get_recent_session_activity(self, jsonl_path: str, max_lines: int = 10) -> str:
+        """Get recent activity from a Claude session JSONL file."""
+        import json
+        from collections import deque
+        
+        try:
+            recent_lines = deque(maxlen=max_lines)
+            
+            with open(jsonl_path, 'r') as f:
+                for line in f:
+                    recent_lines.append(line)
+            
+            activities = []
+            for line in recent_lines:
+                try:
+                    data = json.loads(line)
+                    msg_type = data.get("type", "")
+                    
+                    if msg_type == "tool_use":
+                        tool_name = data.get("name", "unknown_tool")
+                        activities.append(f"🔧 Used tool: {tool_name}")
+                    elif msg_type == "assistant":
+                        msg = data.get("message", {})
+                        if isinstance(msg, dict):
+                            for block in msg.get("content", []):
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text = block.get("text", "")[:100]
+                                    if text:
+                                        activities.append(f"💬 {text}...")
+                    elif msg_type == "result":
+                        activities.append(f"✅ Task completed")
+                        
+                except json.JSONDecodeError:
+                    continue
+            
+            return "\n".join(activities[-5:]) if activities else "No recent activity found."
+            
+        except Exception as e:
+            logger.debug(f"Error reading session activity: {e}")
+            return "Could not read session activity."
+
+    async def cancel_claude_session(self, session_id: str) -> str:
+        """Cancel a running Claude Code session.
+        
+        Args:
+            session_id: The session ID to cancel
+            
+        Returns:
+            Confirmation message
+        """
+        session = self.claude_sessions.get(session_id)
+        
+        if not session:
+            return f"Session {session_id} not found in active sessions, sir. It may have already completed."
+        
+        if session["status"] != "running":
+            return f"Session {session_id} is not running (status: {session['status']}), sir."
+        
+        process = session.get("process")
+        if not process:
+            return f"No process found for session {session_id}, sir."
+        
+        try:
+            # Terminate the process
+            process.terminate()
+            
+            # Give it a moment to clean up
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # Force kill if it doesn't terminate
+                process.kill()
+                await process.wait()
+            
+            session["status"] = "cancelled"
+            logger.info(f"Cancelled Claude Code session {session_id}")
+            
+            return f"Claude Code session {session_id} has been cancelled, sir.\n\nGoal was: {session['goal'][:100]}..."
+            
+        except Exception as e:
+            logger.error(f"Error cancelling session {session_id}: {e}")
+            return f"Error cancelling session: {str(e)}"
 
     def is_complex_task(self, goal: str) -> bool:
         """Determine if a task should use Claude Code (complex) vs light commands.
@@ -3652,8 +4002,23 @@ class ProgrammerAgent(SubAgent):
             return await self.execute_with_claude_code(
                 goal=goal,
                 project_path=args.get('project_path'),
-                timeout_minutes=args.get('timeout', 10)
+                timeout_minutes=args.get('timeout', 10),
+                background=args.get('background', False)
             )
+        # Claude Code session management functions
+        elif function_name == 'list_claude_sessions' or action == 'list_claude_sessions':
+            include_completed = args.get('include_completed', True)
+            return await self.list_claude_sessions(include_completed)
+        elif function_name == 'get_claude_session_status' or action == 'get_claude_session_status':
+            session_id = args.get('session_id', '')
+            if not session_id:
+                return "Please provide a session ID, sir."
+            return await self.get_claude_session_status(session_id)
+        elif function_name == 'cancel_claude_session' or action == 'cancel_claude_session':
+            session_id = args.get('session_id', '')
+            if not session_id:
+                return "Please provide a session ID to cancel, sir."
+            return await self.cancel_claude_session(session_id)
         # Check file operations first (most specific)
         elif 'file_path' in args and action in ['read', 'edit', 'create', 'delete']:
             return await self.edit_code(args)
@@ -5707,9 +6072,56 @@ def get_function_declarations() -> list:
                     "timeout": {
                         "type": "INTEGER",
                         "description": "Timeout in minutes (default: 10, max: 30)"
+                    },
+                    "background": {
+                        "type": "BOOLEAN",
+                        "description": "If true, run in background and return immediately with session ID (default: false)"
                     }
                 },
                 "required": ["goal"]
+            }
+        },
+        # Claude Code Session Management
+        {
+            "name": "list_claude_sessions",
+            "description": "List all Claude Code programming sessions - both running and recently completed. Shows session ID, status, goal, project, and start time. Use this when the user asks 'what is Claude working on?', 'list coding sessions', or 'show running tasks'.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "include_completed": {
+                        "type": "BOOLEAN",
+                        "description": "Whether to include completed/cancelled sessions (default: true)"
+                    }
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "get_claude_session_status",
+            "description": "Get detailed status of a specific Claude Code session including progress, files modified, and recent activity. Use when user asks for details about a particular session.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "session_id": {
+                        "type": "STRING",
+                        "description": "The session ID to check (8 character ID)"
+                    }
+                },
+                "required": ["session_id"]
+            }
+        },
+        {
+            "name": "cancel_claude_session",
+            "description": "Cancel a running Claude Code session. Stops the programming task immediately. Use when user says 'stop Claude', 'cancel the coding task', or 'kill that session'.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "session_id": {
+                        "type": "STRING",
+                        "description": "The session ID to cancel (8 character ID)"
+                    }
+                },
+                "required": ["session_id"]
             }
         }
     ]

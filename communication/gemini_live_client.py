@@ -597,6 +597,10 @@ Be conversational, friendly, and helpful."""
         "hangup_call",
         "make_goal_call",  # Triggers Twilio call (separate session, not a worker)
         "send_to_n8n",     # KIPP messages are fast
+        # Claude Code session management (quick status checks)
+        "list_claude_sessions",
+        "get_claude_session_status",
+        "cancel_claude_session",
     }
     
     async def _handle_function_calls(self, tool_call):
@@ -751,8 +755,16 @@ Be conversational, friendly, and helpful."""
             url = args.get("url", "")
             return f"web browsing: {action} {url}"
         elif fn_name == "use_claude_code":
-            task = args.get("task", "")
+            task = args.get("task", args.get("goal", ""))
             return f"claude code programming: {task}"
+        elif fn_name == "list_claude_sessions":
+            return "list claude code sessions"
+        elif fn_name == "get_claude_session_status":
+            session_id = args.get("session_id", "")
+            return f"get claude session status: {session_id}"
+        elif fn_name == "cancel_claude_session":
+            session_id = args.get("session_id", "")
+            return f"cancel claude session: {session_id}"
         else:
             # Generic fallback
             return f"{fn_name}: {str(args)[:100]}"
