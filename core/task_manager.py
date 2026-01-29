@@ -13,19 +13,26 @@ logger = logging.getLogger(__name__)
 
 
 class TaskType:
-    """Types of background tasks."""
+    """Types of background tasks (processed via Redis Queue workers).
+    
+    NOTE: Outbound phone calls are NOT included here because they:
+    - Create new Twilio calls with their own Gemini Live sessions
+    - Are managed by SessionManager, not BackgroundTaskManager
+    - Have their own limit (10 concurrent sessions)
+    """
     PROGRAMMING = "programming"
     RESEARCH = "research"
-    CALL = "call"
 
 
 class BackgroundTaskManager:
     """Manages background tasks using Redis Queue.
     
     Supports up to MAX_BACKGROUND_TASKS concurrent tasks across:
-    - Programming tasks (code editing, debugging)
+    - Programming tasks (code editing, debugging, Claude Code)
     - Research tasks (deep research with Gemini/Claude)
-    - Call tasks (outbound phone calls)
+    
+    NOTE: Outbound calls are NOT managed here - they create new Gemini Live
+    sessions via Twilio and are tracked by SessionManager separately.
     """
     
     def __init__(self):
@@ -39,10 +46,10 @@ class BackgroundTaskManager:
             )
             
             # Create queues for different task types
+            # NOTE: Calls are NOT queued here - they go through Twilio directly
             self.queues = {
                 TaskType.PROGRAMMING: Queue('tars_programming', connection=self.redis_conn),
                 TaskType.RESEARCH: Queue('tars_research', connection=self.redis_conn),
-                TaskType.CALL: Queue('tars_calls', connection=self.redis_conn),
             }
             self.queue = self.queues[TaskType.PROGRAMMING]  # Default queue for backward compatibility
             
@@ -50,7 +57,7 @@ class BackgroundTaskManager:
             self.max_concurrent = Config.MAX_BACKGROUND_TASKS
             
             logger.info(f"BackgroundTaskManager initialized (Redis: {Config.REDIS_HOST}:{Config.REDIS_PORT})")
-            logger.info(f"Max concurrent tasks: {self.max_concurrent}")
+            logger.info(f"Max concurrent background tasks: {self.max_concurrent} (calls are separate)")
             
         except Exception as e:
             logger.error(f"Failed to initialize BackgroundTaskManager: {e}")
@@ -92,7 +99,6 @@ class BackgroundTaskManager:
         counts = {
             TaskType.PROGRAMMING: 0,
             TaskType.RESEARCH: 0,
-            TaskType.CALL: 0
         }
         
         for task_id, task_info in self.tasks.items():

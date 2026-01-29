@@ -23,11 +23,12 @@ class TaskRouter:
     - Run in background (queue for worker, return immediately)
     """
     
-    # Keywords that strongly indicate background tasks
+    # Keywords that strongly indicate background tasks (Redis Queue workers)
+    # NOTE: "call/phone" are NOT here - calls create new Gemini sessions via Twilio,
+    # they don't use background workers and have their own session limit
     BACKGROUND_KEYWORDS = [
         "build", "create project", "code", "program", "develop",
         "research", "deep dive", "analyze in depth", "comprehensive",
-        "call", "phone", "make a call", "outbound",
         "fix all", "refactor", "migrate", "update all",
         "test", "run tests", "debug"
     ]

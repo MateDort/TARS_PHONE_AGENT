@@ -572,6 +572,7 @@ Be conversational, friendly, and helpful."""
                     # #endregion
     
     # Functions that can be routed to background based on TaskRouter decision
+    # These use Redis Queue workers and count towards MAX_BACKGROUND_TASKS limit
     BACKGROUND_ELIGIBLE_FUNCTIONS = {
         "start_autonomous_coding",  # Programming tasks
         "deep_research",            # Research tasks
@@ -584,6 +585,8 @@ Be conversational, friendly, and helpful."""
     }
     
     # Functions that should ALWAYS run in foreground (instant responses)
+    # NOTE: make_goal_call returns immediately - the actual call runs in its own
+    # Gemini Live session via Twilio (not a background worker)
     FOREGROUND_ONLY_FUNCTIONS = {
         "get_current_time",
         "lookup_contact",
@@ -595,6 +598,8 @@ Be conversational, friendly, and helpful."""
         "list_active_sessions",
         "get_session_info",
         "hangup_call",
+        "make_goal_call",  # Triggers Twilio call (separate session, not a worker)
+        "send_to_n8n",     # KIPP messages are fast
     }
     
     async def _handle_function_calls(self, tool_call):
