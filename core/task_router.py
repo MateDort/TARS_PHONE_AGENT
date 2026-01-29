@@ -26,12 +26,16 @@ class TaskRouter:
     # Keywords that strongly indicate background tasks (Redis Queue workers)
     # NOTE: "call/phone" are NOT here - calls create new Gemini sessions via Twilio,
     # they don't use background workers and have their own session limit
+    # Keywords that strongly indicate background tasks (Redis Queue workers)
+    # NOTE: "call/phone" are NOT here - calls create new Gemini sessions via Twilio,
+    # they don't use background workers and have their own session limit
     BACKGROUND_KEYWORDS = [
         "build", "create project", "code", "program", "develop",
         "research", "deep dive", "analyze in depth", "comprehensive",
         "fix all", "refactor", "migrate", "update all",
         "test", "run tests", "debug",
-        "control computer", "use computer", "click", "type", "open app", "screenshot"
+        "control computer", "use computer", "click", "type", "open app", "screenshot",
+        "spotify", "amazon", "web search", "browser", "navigate to", "open url", "find product"
     ]
     
     # Keywords that indicate instant responses
@@ -129,14 +133,12 @@ class TaskRouter:
     
     def _classify_with_ai(self, user_request: str) -> TaskType:
         """Use Gemini to classify task type."""
-        prompt = f"""Classify this user request into one of three categories based on how long it would take to complete:
+        prompt = f"""Classify this user request into one of three categories:
+1. INSTANT: Simple greetings, time/date, weather, short Q&A (< 2 seconds)
+2. SHORT: File checks, git status, simple lookups (< 30 seconds)
+3. BACKGROUND: Computer control (Spotify, Apps), Web Browsing (Amazon, Research), Coding, Complex tasks (> 30 seconds)
 
 Request: "{user_request}"
-
-Categories:
-- INSTANT: Simple greetings, time/date questions, yes/no answers, weather (< 2 seconds)
-- SHORT: File operations, git status, simple searches, quick lookups (< 30 seconds)
-- BACKGROUND: Programming tasks, deep research, phone calls, multi-step operations (> 30 seconds)
 
 Respond with ONLY one word: INSTANT, SHORT, or BACKGROUND"""
 

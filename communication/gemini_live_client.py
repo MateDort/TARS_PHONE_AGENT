@@ -652,7 +652,13 @@ Be conversational, friendly, and helpful."""
             
             # Smart routing: Check if this function should run in background
             should_background = False
-            if fn_name in self.BACKGROUND_ELIGIBLE_FUNCTIONS:
+            
+            # Computer Control and Web Browse should almost ALWAYS be background tasks
+            if fn_name in ["computer_control", "browse_web"]:
+                logger.info(f"TaskRouter: Forcing {fn_name} to BACKGROUND priority")
+                should_background = True
+            
+            elif fn_name in self.BACKGROUND_ELIGIBLE_FUNCTIONS:
                 # Use task router to classify based on the request
                 request_text = self._build_request_text(fn_name, args)
                 task_type = task_router.classify_task(request_text)

@@ -68,10 +68,11 @@ def start_single_worker(worker_id: int = 0):
         # Workers listen on ALL queues defined in TaskManager
         programming_queue = Queue('tars_programming', connection=redis_conn)
         research_queue = Queue('tars_research', connection=redis_conn)
+        computer_queue = Queue('tars_computer_control', connection=redis_conn)
         calls_queue = Queue('tars_calls', connection=redis_conn)
         
         worker = Worker(
-            [programming_queue, research_queue, calls_queue],  # Listen on all queues
+            [programming_queue, research_queue, computer_queue, calls_queue],  # Listen on all queues
             connection=redis_conn,
             name=f'tars-worker-{worker_id}'
         )
