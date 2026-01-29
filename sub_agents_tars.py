@@ -2160,10 +2160,13 @@ class WebBrowserAgent(SubAgent):
 
         Args:
             args: {
-                "action": "navigate|extract|screenshot|click|fill|scroll|get_links|get_text|close",
-                "url": str (for navigate),
+                "action": "navigate|search|extract|extract_products|screenshot|click|fill|scroll|get_links|get_text|close",
+                "url": str (for navigate, search, extract_products),
+                "search_query": str (for search, extract_products),
                 "selector": str (for click/fill/extract),
                 "value": str (for fill),
+                "max_price": float (for extract_products),
+                "send_to_discord": bool (for extract_products),
                 "wait_for": str (optional selector to wait for),
                 "timeout": int (optional, milliseconds)
             }
@@ -2178,6 +2181,9 @@ class WebBrowserAgent(SubAgent):
         try:
             if action == "navigate":
                 return await self._navigate(args)
+            elif action == "search":
+                # Search is now handled by extract_products
+                return await self.extract_products(args)
             elif action == "extract":
                 return await self._extract_content(args)
             elif action == "screenshot":
@@ -2644,69 +2650,149 @@ class WebBrowserAgent(SubAgent):
     async def extract_products(self, args: Dict[str, Any]) -> str:
         """Extract product listings from a shopping page (Amazon, eBay, etc.).
         
+        This method handles the full flow:
+        1. Navigate to the URL (if provided)
+        2. Search for the product (if search_query provided)
+        3. Extract product listings
+        4. Send to Discord via KIPP (if send_to_discord)
+        
         Args:
             args: {
-                "price_selector": CSS selector for price elements,
-                "name_selector": CSS selector for product names,
-                "link_selector": CSS selector for product links,
+                "url": URL to navigate to (e.g., "https://www.amazon.com"),
+                "search_query": What to search for (e.g., "Raspberry Pi 5"),
                 "max_price": Optional maximum price filter,
-                "send_to_discord": Whether to send results to Discord
+                "send_to_discord": Whether to send results to Discord (default True)
             }
         """
         await self._ensure_browser()
         
+        url = args.get("url", "")
+        search_query = args.get("search_query", "")
+        
+        # Build direct search URL when possible (more reliable than filling search box)
+        if search_query:
+            import urllib.parse
+            encoded_query = urllib.parse.quote_plus(search_query)
+            
+            if url and "amazon" in url.lower():
+                # Amazon direct search URL
+                url = f"https://www.amazon.com/s?k={encoded_query}"
+                logger.info(f"Using Amazon direct search URL: {url}")
+            elif url and "ebay" in url.lower():
+                # eBay direct search URL
+                url = f"https://www.ebay.com/sch/i.html?_nkw={encoded_query}"
+                logger.info(f"Using eBay direct search URL: {url}")
+            elif url and "google" in url.lower():
+                # Google Shopping search
+                url = f"https://www.google.com/search?q={encoded_query}&tbm=shop"
+                logger.info(f"Using Google Shopping search URL: {url}")
+        
+        # Navigate to URL (either direct search URL or provided URL)
+        if url:
+            try:
+                await self._page.goto(url, timeout=30000)
+                await self._page.wait_for_load_state("domcontentloaded", timeout=15000)
+                # Give page a moment to render dynamic content
+                await self._page.wait_for_timeout(2000)
+                logger.info(f"Navigated to {url}")
+            except Exception as e:
+                logger.warning(f"Navigation timeout/error: {e}, continuing anyway")
+        
         # Common selectors for popular sites
         site_selectors = {
             "amazon": {
-                "name": ".s-title-instructions-style span, .a-text-normal",
+                "container": "[data-component-type='s-search-result']",
+                "name": "h2 span, .a-text-normal",
                 "price": ".a-price .a-offscreen, .a-price-whole",
-                "link": "a.a-link-normal.s-no-outline"
+                "link": "h2 a"
             },
             "ebay": {
+                "container": ".s-item",
                 "name": ".s-item__title",
                 "price": ".s-item__price",
                 "link": ".s-item__link"
+            },
+            "google_shopping": {
+                "container": "[data-docid]",
+                "name": ".EI11Pd, .sh-np__product-title, h3",
+                "price": ".a8Pemb, .OFFNJ",
+                "link": "a"
             }
         }
         
-        # Try to detect site
+        # Detect site from current URL
         current_url = self._page.url.lower()
         selectors = {}
         if "amazon" in current_url:
             selectors = site_selectors["amazon"]
         elif "ebay" in current_url:
             selectors = site_selectors["ebay"]
+        elif "google.com" in current_url and "tbm=shop" in current_url:
+            selectors = site_selectors["google_shopping"]
         else:
             selectors = {
-                "name": args.get("name_selector", "[class*='title'], [class*='name']"),
-                "price": args.get("price_selector", "[class*='price']"),
-                "link": args.get("link_selector", "a")
+                "container": "[class*='product'], [class*='item'], article",
+                "name": "[class*='title'], [class*='name'], h2, h3",
+                "price": "[class*='price']",
+                "link": "a[href]"
             }
         
         max_price = args.get("max_price")
         send_to_discord = args.get("send_to_discord", True)
         
+        container_selector = selectors.get("container", "")
+        name_selector = selectors.get("name", "")
+        price_selector = selectors.get("price", "")
+        link_selector = selectors.get("link", "")
+        
         try:
-            # Extract products using JavaScript
-            products = await self._page.evaluate(f"""
-                () => {{
-                    const names = Array.from(document.querySelectorAll("{selectors['name']}")).map(el => el.textContent?.trim());
-                    const prices = Array.from(document.querySelectorAll("{selectors['price']}")).map(el => el.textContent?.trim());
-                    const links = Array.from(document.querySelectorAll("{selectors['link']}")).map(el => el.href);
-                    
-                    const products = [];
-                    for (let i = 0; i < Math.min(names.length, 20); i++) {{
-                        if (names[i] && names[i].length > 5) {{
-                            products.push({{
-                                name: names[i],
-                                price: prices[i] || 'N/A',
-                                url: links[i] || ''
-                            }});
-                        }}
+            # Extract products using container-based approach
+            if container_selector:
+                products = await self._page.evaluate(f"""
+                    () => {{
+                        const containers = document.querySelectorAll("{container_selector}");
+                        const products = [];
+                        
+                        containers.forEach((container, idx) => {{
+                            if (idx >= 15) return; // Limit to 15 products
+                            
+                            const nameEl = container.querySelector("{name_selector}");
+                            const priceEl = container.querySelector("{price_selector}");
+                            const linkEl = container.querySelector("{link_selector}");
+                            
+                            const name = nameEl?.textContent?.trim() || '';
+                            const price = priceEl?.textContent?.trim() || 'N/A';
+                            const url = linkEl?.href || '';
+                            
+                            if (name.length > 10 && !name.includes('results for')) {{
+                                products.push({{ name, price, url }});
+                            }}
+                        }});
+                        
+                        return products;
                     }}
-                    return products;
-                }}
-            """)
+                """)
+            else:
+                # Fallback: extract from parallel arrays
+                products = await self._page.evaluate(f"""
+                    () => {{
+                        const names = Array.from(document.querySelectorAll("{name_selector}")).map(el => el.textContent?.trim());
+                        const prices = Array.from(document.querySelectorAll("{price_selector}")).map(el => el.textContent?.trim());
+                        const links = Array.from(document.querySelectorAll("{link_selector}")).map(el => el.href);
+                        
+                        const products = [];
+                        for (let i = 0; i < Math.min(names.length, 15); i++) {{
+                            if (names[i] && names[i].length > 10) {{
+                                products.push({{
+                                    name: names[i],
+                                    price: prices[i] || 'N/A',
+                                    url: links[i] || ''
+                                }});
+                            }}
+                        }}
+                        return products;
+                    }}
+                """)
             
             if not products:
                 return "No products found on this page."
@@ -3295,7 +3381,9 @@ Include citations to sources where appropriate. Be comprehensive but accurate.""
             logger.warning(f"Failed to send progress update: {e}")
 
     async def _send_research_results(self, goal: str, report: str, context: dict, file_path: str):
-        """Send completed research results via Discord AND Gmail through KIPP.
+        """Send completed research results via email only (full report).
+        
+        Discord has a 2000 character limit, so we only send the full report via email.
         
         Args:
             goal: Original research goal
@@ -3311,18 +3399,8 @@ Include citations to sources where appropriate. Be comprehensive but accurate.""
             logger.warning("N8N webhook not configured - cannot send research results")
             return
         
-        # Build summary for Discord (shorter)
         sources_count = len(context.get("sources", []))
         iterations = context.get("iteration", 0)
-        
-        discord_message = (
-            f"**Deep Research Complete**\n\n"
-            f"**Topic:** {goal}\n"
-            f"**Sources consulted:** {sources_count}\n"
-            f"**Iterations:** {iterations}\n\n"
-            f"**Summary:**\n{report[:1500]}...\n\n"
-            f"*Full report saved to:* `{file_path}`"
-        )
         
         # Build full email for Gmail (complete report)
         email_subject = f"TARS Research Report: {goal[:50]}"
@@ -3330,51 +3408,46 @@ Include citations to sources where appropriate. Be comprehensive but accurate.""
 <h2>Deep Research Report</h2>
 <p><strong>Topic:</strong> {goal}</p>
 <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+<p><strong>Sources consulted:</strong> {sources_count}</p>
+<p><strong>Iterations:</strong> {iterations}</p>
 <hr>
 
 <h3>Report</h3>
-<pre style="white-space: pre-wrap; font-family: sans-serif;">
+<div style="white-space: pre-wrap; font-family: sans-serif; line-height: 1.6;">
 {report}
-</pre>
+</div>
 
 <h3>Sources ({sources_count})</h3>
 <ul>
 """
         for s in context.get("sources", []):
-            email_body += f'<li><a href="{s["url"]}">{s.get("title", s["url"])}</a></li>\n'
+            title = s.get("title", s.get("url", "Unknown"))
+            url = s.get("url", "#")
+            email_body += f'<li><a href="{url}">{title}</a></li>\n'
         
         email_body += """
 </ul>
 
 <hr>
 <p><em>Generated by TARS Deep Research Agent</em></p>
+<p><em>Full report also saved locally to: """ + file_path + """</em></p>
 """
         
         try:
             async with aiohttp.ClientSession() as session:
-                # Send to Discord
-                discord_payload = {
-                    "target": "discord",
-                    "source": "deep_research",
-                    "message_type": "research_complete",
-                    "routing_instruction": "send_via_discord",
-                    "message": discord_message
-                }
-                await session.post(webhook_url, json=discord_payload, timeout=15)
-                logger.info("Research results sent to Discord via KIPP")
-                
-                # Send to Gmail (via KIPP)
+                # Send full report to Gmail only (no Discord - 2000 char limit)
                 gmail_payload = {
                     "target": "gmail",
                     "source": "deep_research", 
                     "message_type": "research_report",
                     "routing_instruction": "send_via_gmail",
+                    "to": "matedort1@gmail.com",
                     "subject": email_subject,
                     "body": email_body,
-                    "message": f"Research report for: {goal}"  # Fallback text
+                    "message": f"Research report for: {goal}"
                 }
-                await session.post(webhook_url, json=gmail_payload, timeout=15)
-                logger.info("Research results sent to Gmail via KIPP")
+                await session.post(webhook_url, json=gmail_payload, timeout=30)
+                logger.info(f"Research results sent to matedort1@gmail.com via KIPP")
                 
         except Exception as e:
             logger.error(f"Failed to send research results via KIPP: {e}")
