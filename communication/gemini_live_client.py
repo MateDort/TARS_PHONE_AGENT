@@ -581,6 +581,7 @@ Be conversational, friendly, and helpful."""
         "github_operation",         # Git operations
         "browse_web",               # Web browsing tasks
         "use_claude_code",          # Claude Code tasks (main programming method)
+        "computer_control",         # Computer control tasks
     }
     
     # Functions that should ALWAYS run in foreground (instant responses)
@@ -765,6 +766,9 @@ Be conversational, friendly, and helpful."""
         elif fn_name == "cancel_claude_session":
             session_id = args.get("session_id", "")
             return f"cancel claude session: {session_id}"
+        elif fn_name == "computer_control":
+            goal = args.get("goal", "")
+            return f"computer control: {goal}"
         else:
             # Generic fallback
             return f"{fn_name}: {str(args)[:100]}"

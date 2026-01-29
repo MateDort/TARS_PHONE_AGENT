@@ -30,7 +30,8 @@ class TaskRouter:
         "build", "create project", "code", "program", "develop",
         "research", "deep dive", "analyze in depth", "comprehensive",
         "fix all", "refactor", "migrate", "update all",
-        "test", "run tests", "debug"
+        "test", "run tests", "debug",
+        "control computer", "use computer", "click", "type", "open app", "screenshot"
     ]
     
     # Keywords that indicate instant responses

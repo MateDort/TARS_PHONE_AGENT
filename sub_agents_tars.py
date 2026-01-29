@@ -3097,6 +3097,255 @@ class DeepResearchAgent(SubAgent):
             return f"Could not cancel research: {str(e)}"
 
 
+
+class ComputerControlAgent(SubAgent):
+    """
+    Computer Control Agent - Controls mouse/keyboard to perform UI tasks.
+    
+    Architecture (Agent-S style):
+    1. Screenshot -> Vision LLM
+    2. Reasoning -> Action (Click, Type, Scroll)
+    3. Execution -> PyAutoGUI
+    4. Loop
+    """
+
+    def __init__(self, db: Database, session_manager=None):
+        super().__init__(
+            name="computer_control",
+            description="Controls the computer's mouse and keyboard to perform UI tasks (e.g., 'open Spotify', 'find file'). Uses vision to navigate."
+        )
+        self.db = db
+        self.session_manager = session_manager
+        
+        # Initialize Gemini client for vision
+        self.genai_client = None
+        if Config.GEMINI_API_KEY:
+            try:
+                from google import genai
+                from google.genai import types
+                self.genai_client = genai.Client(api_key=Config.GEMINI_API_KEY)
+                self.genai_types = types
+                logger.info("ComputerControlAgent: Gemini client initialized for vision")
+            except Exception as e:
+                logger.error(f"ComputerControlAgent: Failed to initialize Gemini: {e}")
+                
+        # PyAutoGUI settings
+        try:
+            import pyautogui
+            pyautogui.FAILSAFE = True  # Move mouse to corner to abort
+            pyautogui.PAUSE = 0.5  # Add delay between actions
+            self.pyautogui = pyautogui
+            logger.info("ComputerControlAgent: PyAutoGUI initialized")
+        except ImportError:
+            logger.error("ComputerControlAgent: PyAutoGUI not found")
+            self.pyautogui = None
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute computer control operation.
+
+        Args:
+            args: {
+                "action": "control",
+                "goal": str - Task description
+            }
+        """
+        action = args.get("action", "control")
+        goal = args.get("goal")
+        
+        if not goal:
+            return "Please provide a task goal, sir."
+            
+        if not self.pyautogui:
+            return "Computer control tools (PyAutoGUI) not installed, sir."
+            
+        # Check permissions (simple check)
+        # Note: True permission check requires trying to take a screenshot or move mouse
+        
+        # Check if TaskRouter wants this in background workers
+        route_to_background = args.get('_route_to_background', False)
+        
+        if route_to_background and self.session_manager and getattr(self.session_manager, 'task_manager', None):
+            try:
+                task_manager = self.session_manager.task_manager
+                session_id = args.get('_session_id', 'unknown')
+                
+                # Queue to Redis workers
+                task_id = task_manager.start_computer_control_task(
+                    goal=goal,
+                    session_id=session_id,
+                    timeout_minutes=15
+                )
+                
+                logger.info(f"Computer Control queued to background workers: task_id={task_id}, goal={goal[:50]}...")
+                
+                return (
+                    f"I'll handle that on the computer in the background, sir. Task ID: {task_id}. "
+                    f"You can continue with other things while I work on '{goal}'."
+                )
+            except Exception as e:
+                logger.error(f"Failed to queue computer control task: {e}")
+                # Fall back to foreground execution
+                logger.warning("Falling back to foreground execution")
+        
+        try:
+            return await self._run_control_loop(goal)
+        except Exception as e:
+            logger.error(f"Computer control error: {e}")
+            return f"I encountered an error trying to control the computer: {str(e)}"
+
+    async def _run_control_loop(self, goal: str) -> str:
+        """Main control loop: Screenshot -> Analyze -> Act."""
+        import json
+        
+        MAX_STEPS = 15
+        history = []
+        
+        logger.info(f"Starting computer control task: {goal}")
+        
+        for step in range(MAX_STEPS):
+            # 1. Take screenshot
+            screenshot_path = self._take_screenshot()
+            if not screenshot_path:
+                return "Failed to capture screen, sir. Please check permissions."
+                
+            # 2. Analyze with Gemini Vision
+            try:
+                action_plan = await self._analyze_screen(screenshot_path, goal, history)
+            except Exception as e:
+                logger.error(f"Vision analysis failed: {e}")
+                return f"I'm having trouble seeing the screen, sir. Error: {e}"
+                
+            # 3. Execute action
+            logger.info(f"Step {step+1}: {action_plan.get('reasoning')} -> {action_plan.get('action')}")
+            
+            action_type = action_plan.get('action')
+            params = action_plan.get('params', {})
+            
+            history.append({
+                "step": step + 1,
+                "action": action_type,
+                "reasoning": action_plan.get('reasoning'),
+                "result": "executed"
+            })
+            
+            if action_type == 'done':
+                return f"Task completed: {action_plan.get('reasoning')}"
+                
+            elif action_type == 'fail':
+                return f"I couldn't complete the task, sir. {action_plan.get('reasoning')}"
+                
+            elif action_type == 'click':
+                # Convert coordinates (0-1000 scale to pixels)
+                screen_w, screen_h = self.pyautogui.size()
+                x = int(params.get('x', 0) * screen_w / 1000)
+                y = int(params.get('y', 0) * screen_h / 1000)
+                
+                # Move smoothly
+                self.pyautogui.moveTo(x, y, duration=0.5)
+                self.pyautogui.click()
+                
+            elif action_type == 'double_click':
+                screen_w, screen_h = self.pyautogui.size()
+                x = int(params.get('x', 0) * screen_w / 1000)
+                y = int(params.get('y', 0) * screen_h / 1000)
+                
+                self.pyautogui.moveTo(x, y, duration=0.5)
+                self.pyautogui.doubleClick()
+                
+            elif action_type == 'type':
+                text = params.get('text', '')
+                self.pyautogui.write(text, interval=0.05)
+                if params.get('submit', False):
+                    self.pyautogui.press('enter')
+                    
+            elif action_type == 'press':
+                keys = params.get('keys', [])
+                if isinstance(keys, str):
+                    keys = [keys]
+                # Handle hotkeys like ['command', 'space']
+                self.pyautogui.hotkey(*keys)
+                
+            elif action_type == 'wait':
+                await asyncio.sleep(params.get('seconds', 2))
+                
+            # Cleanup screenshot
+            if os.path.exists(screenshot_path):
+                os.unlink(screenshot_path)
+                
+            # Wait for UI to update
+            await asyncio.sleep(2)
+            
+        return "I reached the maximum number of steps without confirming completion, sir."
+
+    def _take_screenshot(self) -> Optional[str]:
+        """Capture full screen to a temporary file."""
+        import subprocess
+        import tempfile
+        
+        path = os.path.join(tempfile.gettempdir(), "tars_vision.png")
+        
+        # Native macOS screencapture is fastest and most reliable
+        try:
+            # -x: mute sound, -r: do not add shadow
+            subprocess.run(["screencapture", "-x", "-r", path], check=True)
+            return path
+        except Exception as e:
+            logger.error(f"Screenshot failed: {e}")
+            return None
+
+    async def _analyze_screen(self, screenshot_path: str, goal: str, history: list) -> Dict[str, Any]:
+        """Send screenshot to Gemini for analysis and action planning."""
+        import base64
+        import json
+        
+        with open(screenshot_path, "rb") as f:
+            image_data = f.read()
+            
+        # Format history for context
+        history_str = json.dumps(history[-5:], indent=2) if history else "None"
+        
+        prompt = f"""
+        You are a computer control agent. Your goal is: "{goal}"
+        
+        Current history of actions:
+        {history_str}
+        
+        Analyze the screenshot and determine the NEXT SINGLE ACTION to take.
+        
+        Coordinate system: 0,0 is top-left, 1000,1000 is bottom-right.
+        
+        Allowed actions:
+        - click(x, y): Click a UI element
+        - double_click(x, y): Open file/app
+        - type(text, submit=True/False): Type text
+        - press(keys=["command", "space"]): Press key combo
+        - wait(seconds): Wait for loading
+        - done(reason): Task completed
+        - fail(reason): Cannot complete task
+        
+        Return JSON ONLY:
+        {{
+            "reasoning": "I see the Spotlight search bar...",
+            "action": "type",
+            "params": {{ "text": "Spotify", "submit": true }}
+        }}
+        """
+        
+        from google.genai import types
+        
+        response = self.genai_client.models.generate_content(
+            model="gemini-2.0-flash-exp", # Use fast vision model
+            contents=[
+                types.Part.from_text(prompt),
+                types.Part.from_bytes(image_data, "image/png")
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
+            )
+        )
+        
+        return json.loads(response.text)
 class ProgrammerAgent(SubAgent):
     """Handles programming tasks: file operations, terminal commands, code editing, and GitHub operations."""
 
@@ -5092,6 +5341,9 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     # Add programmer agent (with session_manager for background tasks)
     agents["programmer"] = ProgrammerAgent(db=db, github_handler=None, session_manager=session_manager)
 
+    # Add computer control agent
+    agents["computer_control"] = ComputerControlAgent(db=db, session_manager=session_manager)
+
     return agents
 
 
@@ -5625,6 +5877,24 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["action", "file_path"]
+            }
+        },
+        {
+            "name": "computer_control",
+            "description": "Control the computer's mouse and keyboard to perform UI tasks. Use this when the user asks to manipulate desktop apps (e.g., 'open Spotify', 'find file in Notes', 'send message on Slack'). The agent sees the screen and navigates naturally.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: always 'control'"
+                    },
+                    "goal": {
+                        "type": "STRING",
+                        "description": "Description of the task to perform (e.g., 'Open Notes and find the song list', 'Play Bohemian Rhapsody on Spotify')"
+                    }
+                },
+                "required": ["action", "goal"]
             }
         },
         {

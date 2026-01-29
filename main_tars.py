@@ -208,6 +208,8 @@ class TARSPhoneAgent:
             "list_claude_sessions": agents.get("programmer"),
             "get_claude_session_status": agents.get("programmer"),
             "cancel_claude_session": agents.get("programmer"),
+            # Computer Control
+            "computer_control": agents.get("computer_control"),
         }
 
         for declaration in declarations:

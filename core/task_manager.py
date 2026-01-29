@@ -22,6 +22,7 @@ class TaskType:
     """
     PROGRAMMING = "programming"
     RESEARCH = "research"
+    COMPUTER_CONTROL = "computer_control"
 
 
 class BackgroundTaskManager:
@@ -50,6 +51,7 @@ class BackgroundTaskManager:
             self.queues = {
                 TaskType.PROGRAMMING: Queue('tars_programming', connection=self.redis_conn),
                 TaskType.RESEARCH: Queue('tars_research', connection=self.redis_conn),
+                TaskType.COMPUTER_CONTROL: Queue('tars_computer_control', connection=self.redis_conn),
             }
             self.queue = self.queues[TaskType.PROGRAMMING]  # Default queue for backward compatibility
             
@@ -380,3 +382,55 @@ class BackgroundTaskManager:
                 stats[f'{task_type}_queue_length'] = 0
         
         return stats
+    def start_computer_control_task(
+        self,
+        goal: str,
+        session_id: str,
+        timeout_minutes: int = 15
+    ) -> str:
+        """Start a background computer control task.
+        
+        Args:
+            goal: Task description
+            session_id: TARS session that started this
+            timeout_minutes: Timeout for the task
+        
+        Returns:
+            Task ID
+        """
+        if not self.queues.get(TaskType.COMPUTER_CONTROL):
+            raise RuntimeError("Computer control queue not available")
+        
+        if not self.can_start_new_task():
+            active = self.get_active_task_count()
+            raise RuntimeError(f"Max tasks ({self.max_concurrent}) reached. {active} running.")
+        
+        task_id = str(uuid.uuid4())[:8]
+        
+        try:
+            job = self.queues[TaskType.COMPUTER_CONTROL].enqueue(
+                'core.background_worker.run_computer_control',
+                task_id=task_id,
+                goal=goal,
+                session_id=session_id,
+                timeout_minutes=timeout_minutes,
+                job_timeout=f'{timeout_minutes + 5}m',
+                result_ttl=3600,
+                job_id=f"control-{task_id}"
+            )
+            
+            self.tasks[task_id] = {
+                'job': job,
+                'goal': goal,
+                'session_id': session_id,
+                'started_at': datetime.now(),
+                'status': 'queued',
+                'task_type': TaskType.COMPUTER_CONTROL
+            }
+            
+            logger.info(f"Started computer control task {task_id}: {goal}")
+            return task_id
+            
+        except Exception as e:
+            logger.error(f"Failed to start computer control task: {e}")
+            raise
