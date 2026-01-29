@@ -571,12 +571,44 @@ Be conversational, friendly, and helpful."""
                         pass
                     # #endregion
     
+    # Functions that can be routed to background based on TaskRouter decision
+    BACKGROUND_ELIGIBLE_FUNCTIONS = {
+        "start_autonomous_coding",  # Programming tasks
+        "deep_research",            # Research tasks
+        "manage_project",           # Project management
+        "edit_code",                # Code editing
+        "execute_terminal",         # Terminal commands (long-running)
+        "github_operation",         # Git operations
+        "browse_web",               # Web browsing tasks
+        "use_claude_code",          # Claude Code tasks
+    }
+    
+    # Functions that should ALWAYS run in foreground (instant responses)
+    FOREGROUND_ONLY_FUNCTIONS = {
+        "get_current_time",
+        "lookup_contact",
+        "manage_reminder",
+        "adjust_config",
+        "send_notification",
+        "check_coding_progress",
+        "cancel_coding_task",
+        "list_active_sessions",
+        "get_session_info",
+        "hangup_call",
+    }
+    
     async def _handle_function_calls(self, tool_call):
-        """Handle function calls from Gemini with task planning.
+        """Handle function calls from Gemini with intelligent task routing.
+        
+        Uses TaskRouter to automatically decide if tasks should run in:
+        - FOREGROUND: Instant responses (time, contacts, config)
+        - BACKGROUND: Long-running tasks (programming, research, web browsing)
         
         Args:
             tool_call: Tool call from Gemini response
         """
+        from core.task_router import get_task_router, TaskType
+        
         # Collect all function calls
         function_calls = []
         for fc in tool_call.function_calls:
@@ -598,6 +630,9 @@ Be conversational, friendly, and helpful."""
             except Exception as e:
                 logger.warning(f"Task planning failed, executing in original order: {e}")
         
+        # Get task router instance
+        task_router = get_task_router()
+        
         # Execute planned function calls in order
         for call_data in function_calls:
             fn_name = call_data["name"]
@@ -607,6 +642,26 @@ Be conversational, friendly, and helpful."""
             print(f"\n⚙️  FUNCTION CALL: {fn_name}")
             print(f"   Args: {args}")
             logger.info(f"Function call: {fn_name}({args})")
+            
+            # Smart routing: Check if this function should run in background
+            should_background = False
+            if fn_name in self.BACKGROUND_ELIGIBLE_FUNCTIONS:
+                # Use task router to classify based on the request
+                request_text = self._build_request_text(fn_name, args)
+                task_type = task_router.classify_task(request_text)
+                should_background = (task_type == TaskType.BACKGROUND)
+                
+                if should_background:
+                    logger.info(f"TaskRouter: {fn_name} classified as BACKGROUND task")
+                    print(f"   📤 Routing to background...")
+                else:
+                    logger.info(f"TaskRouter: {fn_name} classified as {task_type.value} (foreground)")
+            
+            # If should run in background, add flag to args
+            if should_background and fn_name not in self.FOREGROUND_ONLY_FUNCTIONS:
+                args = dict(args) if args else {}
+                args["_route_to_background"] = True
+                args["_session_id"] = getattr(self, 'session_id', 'unknown')
 
             # Check if we have a handler for this function
             if fn_name in self.function_handlers:
@@ -653,6 +708,50 @@ Be conversational, friendly, and helpful."""
                     response={"error": f"No handler for {fn_name}"}
                 )
                 await self.session.send(input=error_response)
+    
+    def _build_request_text(self, fn_name: str, args: dict) -> str:
+        """Build a natural language description of the function request for TaskRouter.
+        
+        Args:
+            fn_name: Function name
+            args: Function arguments
+            
+        Returns:
+            Natural language description of the request
+        """
+        if not args:
+            args = {}
+        
+        # Build description based on function type
+        if fn_name == "start_autonomous_coding":
+            goal = args.get("goal", "")
+            return f"programming task: {goal}"
+        elif fn_name == "deep_research":
+            goal = args.get("goal", "")
+            return f"deep research on: {goal}"
+        elif fn_name == "manage_project":
+            action = args.get("action", "")
+            return f"project management: {action}"
+        elif fn_name == "edit_code":
+            file_path = args.get("file_path", "")
+            description = args.get("description", "")
+            return f"edit code in {file_path}: {description}"
+        elif fn_name == "execute_terminal":
+            command = args.get("command", "")
+            return f"run terminal command: {command}"
+        elif fn_name == "github_operation":
+            operation = args.get("operation", "")
+            return f"github operation: {operation}"
+        elif fn_name == "browse_web":
+            action = args.get("action", "")
+            url = args.get("url", "")
+            return f"web browsing: {action} {url}"
+        elif fn_name == "use_claude_code":
+            task = args.get("task", "")
+            return f"claude code programming: {task}"
+        else:
+            # Generic fallback
+            return f"{fn_name}: {str(args)[:100]}"
     
     async def send_notification(self, message: str):
         """Send a system notification to the agent.

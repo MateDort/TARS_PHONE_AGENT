@@ -2814,15 +2814,22 @@ class DeepResearchAgent(SubAgent):
         action = args.get("action", "research")
         
         if action == "research":
-            # Check if we should queue to background (default) or run in foreground
+            # Check routing flags:
+            # - _run_in_foreground=True: Force foreground (used by background workers internally)
+            # - _route_to_background=True: Force background (set by TaskRouter)
+            # - Default: background for research tasks (they're long-running)
             run_in_foreground = args.get("_run_in_foreground", False)
+            route_to_background = args.get("_route_to_background", True)  # Default to background for research
             
             if run_in_foreground:
-                # Run synchronously (used by background workers)
+                # Run synchronously (used by background workers internally)
                 return await self._run_deep_research_sync(args)
-            else:
+            elif route_to_background:
                 # Queue to background workers (default behavior)
                 return await self._queue_deep_research(args)
+            else:
+                # Rare case: short research in foreground
+                return await self._run_deep_research_sync(args)
         elif action == "status":
             return await self._get_research_status(args)
         elif action == "cancel":
