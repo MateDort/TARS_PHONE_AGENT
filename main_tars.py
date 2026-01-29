@@ -200,6 +200,10 @@ class TARSPhoneAgent:
             "start_autonomous_coding": agents.get("programmer"),
             "check_coding_progress": agents.get("programmer"),
             "cancel_coding_task": agents.get("programmer"),
+            # Web browser agent functions
+            "browse_web": agents.get("web_browser"),
+            # Deep research agent functions
+            "deep_research": agents.get("deep_research"),
         }
 
         for declaration in declarations:

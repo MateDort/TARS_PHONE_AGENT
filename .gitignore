@@ -41,4 +41,6 @@ Thumbs.db
 instructions.md
 test.md
 
-.env.bak.env.bak
+.env
+.env.*
+*.bak

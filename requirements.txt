@@ -32,3 +32,6 @@ certifi==2025.11.12
 # GitHub integration for programmer agent
 PyGithub==2.1.1
 gitpython==3.1.40
+
+# Headless browser for web automation (WebBrowserAgent, DeepResearchAgent)
+playwright>=1.40.0

@@ -2143,6 +2143,747 @@ class KIPPAgent(SubAgent):
             return f"An unexpected error occurred while sending to KIPP, sir: {str(e)}"
 
 
+class WebBrowserAgent(SubAgent):
+    """Headless browser agent using Playwright for web automation and scraping."""
+
+    def __init__(self):
+        super().__init__(
+            name="web_browser",
+            description="Browse websites, extract content, fill forms, take screenshots using headless browser"
+        )
+        self._browser = None
+        self._context = None
+        self._page = None
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute web browser operation.
+
+        Args:
+            args: {
+                "action": "navigate|extract|screenshot|click|fill|scroll|get_links|get_text|close",
+                "url": str (for navigate),
+                "selector": str (for click/fill/extract),
+                "value": str (for fill),
+                "wait_for": str (optional selector to wait for),
+                "timeout": int (optional, milliseconds)
+            }
+        """
+        action = args.get("action", "navigate")
+        
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return "Playwright not installed. Run: pip install playwright && playwright install chromium"
+
+        try:
+            if action == "navigate":
+                return await self._navigate(args)
+            elif action == "extract":
+                return await self._extract_content(args)
+            elif action == "screenshot":
+                return await self._take_screenshot(args)
+            elif action == "click":
+                return await self._click_element(args)
+            elif action == "fill":
+                return await self._fill_form(args)
+            elif action == "scroll":
+                return await self._scroll_page(args)
+            elif action == "get_links":
+                return await self._get_links(args)
+            elif action == "get_text":
+                return await self._get_page_text(args)
+            elif action == "close":
+                return await self._close_browser()
+            else:
+                return f"Unknown browser action: {action}"
+        except Exception as e:
+            logger.error(f"Browser error: {e}")
+            return f"Browser error: {str(e)}"
+
+    async def _ensure_browser(self):
+        """Ensure browser is initialized."""
+        if self._browser is None:
+            from playwright.async_api import async_playwright
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=True)
+            self._context = await self._browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            )
+            self._page = await self._context.new_page()
+            logger.info("Headless browser initialized")
+
+    async def _navigate(self, args: Dict[str, Any]) -> str:
+        """Navigate to a URL."""
+        url = args.get("url")
+        if not url:
+            return "Please provide a URL to navigate to."
+        
+        await self._ensure_browser()
+        
+        wait_for = args.get("wait_for")
+        timeout = args.get("timeout", 30000)
+        
+        try:
+            await self._page.goto(url, timeout=timeout)
+            
+            if wait_for:
+                await self._page.wait_for_selector(wait_for, timeout=timeout)
+            
+            title = await self._page.title()
+            return f"Navigated to: {url}\nPage title: {title}"
+        except Exception as e:
+            return f"Navigation error: {str(e)}"
+
+    async def _extract_content(self, args: Dict[str, Any]) -> str:
+        """Extract content from page using selector."""
+        selector = args.get("selector")
+        if not selector:
+            return "Please provide a CSS selector to extract content from."
+        
+        await self._ensure_browser()
+        
+        try:
+            elements = await self._page.query_selector_all(selector)
+            if not elements:
+                return f"No elements found matching selector: {selector}"
+            
+            contents = []
+            for el in elements[:20]:  # Limit to 20 elements
+                text = await el.text_content()
+                if text and text.strip():
+                    contents.append(text.strip())
+            
+            return f"Found {len(contents)} elements:\n" + "\n".join(contents[:10])
+        except Exception as e:
+            return f"Extraction error: {str(e)}"
+
+    async def _take_screenshot(self, args: Dict[str, Any]) -> str:
+        """Take screenshot of page or element."""
+        await self._ensure_browser()
+        
+        from pathlib import Path
+        from datetime import datetime
+        
+        selector = args.get("selector")
+        filename = args.get("filename") or f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        
+        # Save to .tars_docs folder
+        screenshot_path = Path(Config.TARS_ROOT if hasattr(Config, 'TARS_ROOT') else '.') / ".tars_docs" / filename
+        screenshot_path.parent.mkdir(exist_ok=True)
+        
+        try:
+            if selector:
+                element = await self._page.query_selector(selector)
+                if element:
+                    await element.screenshot(path=str(screenshot_path))
+                else:
+                    return f"Element not found: {selector}"
+            else:
+                await self._page.screenshot(path=str(screenshot_path), full_page=args.get("full_page", False))
+            
+            return f"Screenshot saved: {screenshot_path}"
+        except Exception as e:
+            return f"Screenshot error: {str(e)}"
+
+    async def _click_element(self, args: Dict[str, Any]) -> str:
+        """Click an element on the page."""
+        selector = args.get("selector")
+        if not selector:
+            return "Please provide a selector to click."
+        
+        await self._ensure_browser()
+        
+        try:
+            await self._page.click(selector, timeout=args.get("timeout", 10000))
+            return f"Clicked element: {selector}"
+        except Exception as e:
+            return f"Click error: {str(e)}"
+
+    async def _fill_form(self, args: Dict[str, Any]) -> str:
+        """Fill a form field."""
+        selector = args.get("selector")
+        value = args.get("value", "")
+        
+        if not selector:
+            return "Please provide a selector for the form field."
+        
+        await self._ensure_browser()
+        
+        try:
+            await self._page.fill(selector, value, timeout=args.get("timeout", 10000))
+            return f"Filled '{selector}' with value"
+        except Exception as e:
+            return f"Fill error: {str(e)}"
+
+    async def _scroll_page(self, args: Dict[str, Any]) -> str:
+        """Scroll the page."""
+        await self._ensure_browser()
+        
+        direction = args.get("direction", "down")
+        amount = args.get("amount", 500)
+        
+        try:
+            if direction == "down":
+                await self._page.evaluate(f"window.scrollBy(0, {amount})")
+            elif direction == "up":
+                await self._page.evaluate(f"window.scrollBy(0, -{amount})")
+            elif direction == "bottom":
+                await self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            elif direction == "top":
+                await self._page.evaluate("window.scrollTo(0, 0)")
+            
+            return f"Scrolled {direction}"
+        except Exception as e:
+            return f"Scroll error: {str(e)}"
+
+    async def _get_links(self, args: Dict[str, Any]) -> str:
+        """Get all links from the page."""
+        await self._ensure_browser()
+        
+        try:
+            links = await self._page.evaluate("""
+                () => Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => ({text: a.textContent?.trim(), href: a.href}))
+                    .filter(l => l.href && !l.href.startsWith('javascript:'))
+                    .slice(0, 50)
+            """)
+            
+            if not links:
+                return "No links found on page."
+            
+            result = f"Found {len(links)} links:\n"
+            for link in links[:20]:
+                text = link.get('text', '')[:50] or '[no text]'
+                href = link.get('href', '')
+                result += f"  - {text}: {href}\n"
+            
+            return result
+        except Exception as e:
+            return f"Error getting links: {str(e)}"
+
+    async def _get_page_text(self, args: Dict[str, Any]) -> str:
+        """Get full text content of the page."""
+        await self._ensure_browser()
+        
+        selector = args.get("selector", "body")
+        max_length = args.get("max_length", 10000)
+        
+        try:
+            element = await self._page.query_selector(selector)
+            if not element:
+                return f"Element not found: {selector}"
+            
+            text = await element.text_content()
+            if text:
+                # Clean up whitespace
+                import re
+                text = re.sub(r'\s+', ' ', text).strip()
+                if len(text) > max_length:
+                    text = text[:max_length] + "... [truncated]"
+                return text
+            return "No text content found."
+        except Exception as e:
+            return f"Error getting text: {str(e)}"
+
+    async def _close_browser(self) -> str:
+        """Close the browser."""
+        if self._browser:
+            await self._browser.close()
+            await self._playwright.stop()
+            self._browser = None
+            self._context = None
+            self._page = None
+            return "Browser closed."
+        return "No browser was open."
+
+
+class DeepResearchAgent(SubAgent):
+    """
+    Deep Research Agent - Performs multi-step iterative research like Gemini/Perplexity/OpenAI.
+    
+    Architecture (based on industry research):
+    1. PLANNING: Gemini breaks query into sub-questions
+    2. SEARCHING: Gemini with native google_search grounding (no browser scraping!)
+    3. REASONING: Gemini analyzes results, identifies knowledge gaps
+    4. ITERATION: Loop back to search for missing info
+    5. SYNTHESIS: Claude Opus generates comprehensive report
+    
+    Hybrid approach:
+    - Gemini: Planning, Searching (native google_search), Reasoning
+    - Claude Opus: Final synthesis (better at long-form writing)
+    - WebBrowser: Only for deep page extraction when needed
+    """
+
+    def __init__(self, db: Database, session_manager=None):
+        super().__init__(
+            name="deep_research",
+            description="Conduct deep multi-step research on any topic. Uses Gemini's native Google Search for real-time data, synthesizes findings into comprehensive report."
+        )
+        self.db = db
+        self.session_manager = session_manager
+        self.web_browser = WebBrowserAgent()  # For deep page extraction only
+        
+        # Initialize Gemini client for search and reasoning (primary)
+        self.gemini_client = None
+        if Config.GEMINI_API_KEY:
+            try:
+                from google import genai
+                from google.genai import types
+                self.gemini_client = genai.Client(api_key=Config.GEMINI_API_KEY)
+                self.gemini_types = types
+                logger.info("DeepResearchAgent: Gemini client initialized with google_search")
+            except Exception as e:
+                logger.error(f"DeepResearchAgent: Failed to initialize Gemini: {e}")
+        
+        # Initialize Claude client for synthesis (secondary - better at long-form writing)
+        self.anthropic_client = None
+        if Config.ANTHROPIC_API_KEY:
+            try:
+                self.anthropic_client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+                logger.info("DeepResearchAgent: Claude client initialized for synthesis")
+            except Exception as e:
+                logger.error(f"DeepResearchAgent: Failed to initialize Claude: {e}")
+
+    async def execute(self, args: Dict[str, Any]) -> str:
+        """Execute deep research operation.
+
+        Args:
+            args: {
+                "action": "research|status|cancel",
+                "goal": str - Research question/topic,
+                "max_iterations": int (default: 5),
+                "max_sources": int (default: 10),
+                "output_format": "report|summary|bullet_points",
+                "follow_up_action": "none|build_project|create_visualization"
+            }
+        """
+        action = args.get("action", "research")
+        
+        if action == "research":
+            return await self._run_deep_research(args)
+        elif action == "status":
+            return await self._get_research_status(args)
+        elif action == "cancel":
+            return await self._cancel_research(args)
+        else:
+            return f"Unknown action: {action}"
+
+    async def _run_deep_research(self, args: Dict[str, Any]) -> str:
+        """Run deep research process."""
+        goal = args.get("goal")
+        if not goal:
+            return "Please provide a research goal, sir."
+        
+        max_iterations = args.get("max_iterations", 5)
+        max_sources = args.get("max_sources", 10)
+        output_format = args.get("output_format", "report")
+        
+        if not self.gemini_client:
+            return "Deep research requires Gemini API key for native Google Search, sir."
+        
+        if not self.anthropic_client:
+            logger.warning("Claude not available - will use Gemini for synthesis too")
+        
+        # Research context
+        context = {
+            "goal": goal,
+            "sub_questions": [],
+            "sources": [],
+            "findings": [],
+            "knowledge_gaps": [],
+            "iteration": 0
+        }
+        
+        try:
+            # Phase 1: PLANNING - Break into sub-questions
+            await self._send_progress("Starting deep research", f"Goal: {goal}")
+            context["sub_questions"] = await self._generate_sub_questions(goal)
+            await self._send_progress("Research plan created", f"Generated {len(context['sub_questions'])} sub-questions")
+            
+            # Phase 2-4: SEARCH-REASON-ITERATE loop
+            for iteration in range(max_iterations):
+                context["iteration"] = iteration + 1
+                
+                # Search for current knowledge gaps or sub-questions
+                questions_to_search = context["knowledge_gaps"] if context["knowledge_gaps"] else context["sub_questions"]
+                
+                if not questions_to_search:
+                    break
+                
+                await self._send_progress(f"Iteration {iteration + 1}/{max_iterations}", f"Searching for {len(questions_to_search)} questions")
+                
+                # Search and extract for each question
+                for question in questions_to_search[:3]:  # Max 3 per iteration
+                    if len(context["sources"]) >= max_sources:
+                        break
+                    
+                    # Search the web
+                    search_results = await self._search_web(question)
+                    
+                    # Browse top results (or use pre-extracted content from Gemini)
+                    for result in search_results[:2]:  # Top 2 results per question
+                        page_content = await self._browse_and_extract(result["url"], result)
+                        if page_content:
+                            context["sources"].append({
+                                "url": result["url"],
+                                "title": result.get("title", ""),
+                                "content": page_content[:5000]  # Limit content size
+                            })
+                            context["findings"].append({
+                                "question": question,
+                                "source": result["url"],
+                                "content": page_content[:2000]
+                            })
+                
+                # Reason about findings and identify gaps
+                context["knowledge_gaps"] = await self._identify_knowledge_gaps(context)
+                
+                if not context["knowledge_gaps"]:
+                    await self._send_progress("Research complete", "All questions answered")
+                    break
+                
+                await self._send_progress(f"Identified {len(context['knowledge_gaps'])} gaps", "Continuing research...")
+            
+            # Phase 5: SYNTHESIS - Generate report
+            report = await self._synthesize_report(context, output_format)
+            
+            # Save report
+            await self._save_report(goal, report, context)
+            
+            # Handle follow-up action
+            follow_up = args.get("follow_up_action", "none")
+            if follow_up == "build_project":
+                return report + "\n\n[Follow-up: Ready to build project based on research. Say 'build it' to proceed.]"
+            elif follow_up == "create_visualization":
+                return report + "\n\n[Follow-up: Ready to create visualization. Say 'visualize it' to proceed.]"
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"Deep research error: {e}")
+            return f"Research error: {str(e)}, sir."
+        finally:
+            # Clean up browser
+            await self.web_browser._close_browser()
+
+    async def _generate_sub_questions(self, goal: str) -> list:
+        """Use Gemini to break research goal into sub-questions."""
+        try:
+            response = self.gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"""Break this research goal into 3-5 specific sub-questions that would help answer it comprehensively.
+
+Research goal: {goal}
+
+Return ONLY a JSON array of questions, no other text:
+["question 1", "question 2", "question 3"]"""
+            )
+            
+            import json
+            text = response.text.strip()
+            # Extract JSON array
+            if '[' in text and ']' in text:
+                start = text.index('[')
+                end = text.rindex(']') + 1
+                return json.loads(text[start:end])
+        except Exception as e:
+            logger.error(f"Error generating sub-questions: {e}")
+        
+        return [goal]  # Fallback to original goal
+
+    async def _search_web(self, query: str) -> list:
+        """Search the web using Gemini's native google_search grounding.
+        
+        This is much better than browser scraping because:
+        - Official Google API (not scraping)
+        - Fast and reliable
+        - Returns structured data with citations
+        - No rate limiting issues
+        """
+        try:
+            # Use Gemini with google_search grounding tool
+            grounding_tool = self.gemini_types.Tool(
+                google_search=self.gemini_types.GoogleSearch()
+            )
+            config = self.gemini_types.GenerateContentConfig(
+                tools=[grounding_tool]
+            )
+            
+            response = self.gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"Search for information about: {query}\n\nProvide a detailed answer with facts and sources.",
+                config=config
+            )
+            
+            # Extract grounding metadata (sources/citations)
+            results = []
+            
+            # The response includes grounding chunks with source URLs
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                
+                # Get grounding metadata if available
+                if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                    grounding = candidate.grounding_metadata
+                    
+                    # Extract web search results
+                    if hasattr(grounding, 'grounding_chunks'):
+                        for chunk in grounding.grounding_chunks[:5]:
+                            if hasattr(chunk, 'web') and chunk.web:
+                                results.append({
+                                    "url": chunk.web.uri if hasattr(chunk.web, 'uri') else "",
+                                    "title": chunk.web.title if hasattr(chunk.web, 'title') else "",
+                                    "snippet": ""
+                                })
+                    
+                    # Also get search queries that were used
+                    if hasattr(grounding, 'web_search_queries'):
+                        logger.info(f"Gemini searched for: {grounding.web_search_queries}")
+            
+            # Add the synthesized content as a "virtual" source
+            if response.text:
+                results.insert(0, {
+                    "url": "gemini://synthesized",
+                    "title": f"Gemini Search: {query}",
+                    "snippet": response.text[:500],
+                    "content": response.text  # Full grounded response
+                })
+            
+            logger.info(f"Gemini google_search returned {len(results)} results for: {query}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Gemini search error for '{query}': {e}")
+            # Fallback to browser scraping if Gemini fails
+            logger.info("Falling back to browser-based search...")
+            return await self._search_web_browser_fallback(query)
+    
+    async def _search_web_browser_fallback(self, query: str) -> list:
+        """Fallback browser-based search if Gemini google_search fails."""
+        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        
+        try:
+            await self.web_browser._ensure_browser()
+            await self.web_browser._page.goto(search_url, timeout=15000)
+            
+            # Extract search results
+            results = await self.web_browser._page.evaluate("""
+                () => Array.from(document.querySelectorAll('div.g'))
+                    .slice(0, 5)
+                    .map(el => {
+                        const link = el.querySelector('a');
+                        const title = el.querySelector('h3');
+                        const snippet = el.querySelector('div[data-sncf]') || el.querySelector('.VwiC3b');
+                        return {
+                            url: link?.href || '',
+                            title: title?.textContent || '',
+                            snippet: snippet?.textContent || ''
+                        };
+                    })
+                    .filter(r => r.url && !r.url.includes('google.com'))
+            """)
+            
+            return results or []
+        except Exception as e:
+            logger.error(f"Browser search fallback error for '{query}': {e}")
+            return []
+
+    async def _browse_and_extract(self, url: str, result: dict = None) -> Optional[str]:
+        """Browse a URL and extract main content.
+        
+        For Gemini synthesized results (gemini://synthesized), returns the 
+        pre-extracted content directly without browsing.
+        """
+        # Handle Gemini synthesized results - content already extracted
+        if url.startswith("gemini://"):
+            if result and result.get("content"):
+                return result["content"]
+            return None
+        
+        # For real URLs, use browser to extract content
+        try:
+            await self.web_browser._ensure_browser()
+            await self.web_browser._page.goto(url, timeout=20000)
+            
+            # Try to get main content from various selectors
+            selectors = ["article", "main", ".content", "#content", ".post", "body"]
+            
+            for selector in selectors:
+                try:
+                    element = await self.web_browser._page.query_selector(selector)
+                    if element:
+                        text = await element.text_content()
+                        if text and len(text.strip()) > 200:
+                            # Clean up
+                            import re
+                            text = re.sub(r'\s+', ' ', text).strip()
+                            return text[:5000]
+                except:
+                    continue
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to browse {url}: {e}")
+            return None
+
+    async def _identify_knowledge_gaps(self, context: dict) -> list:
+        """Use Gemini to identify what's still missing from research."""
+        if not context["findings"]:
+            return context["sub_questions"]  # Haven't found anything yet
+        
+        findings_summary = "\n".join([
+            f"- {f['question']}: {f['content'][:500]}..."
+            for f in context["findings"][-5:]
+        ])
+        
+        try:
+            response = self.gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"""Based on this research goal and findings, identify 0-3 knowledge gaps (things still unknown).
+
+Goal: {context['goal']}
+
+Findings so far:
+{findings_summary}
+
+Return ONLY a JSON array of remaining questions, or empty array if complete:
+["gap 1", "gap 2"] or []"""
+            )
+            
+            import json
+            text = response.text.strip()
+            if '[' in text and ']' in text:
+                start = text.index('[')
+                end = text.rindex(']') + 1
+                return json.loads(text[start:end])
+        except Exception as e:
+            logger.error(f"Error identifying knowledge gaps: {e}")
+        
+        return []
+
+    async def _synthesize_report(self, context: dict, output_format: str) -> str:
+        """Synthesize findings into final report.
+        
+        Uses Claude Opus if available (better at long-form writing),
+        falls back to Gemini if Claude is not configured.
+        """
+        sources_text = "\n".join([
+            f"- {s['title']}: {s['content'][:1000]}..."
+            for s in context["sources"][:10]
+        ])
+        
+        format_instructions = {
+            "report": "Write a comprehensive multi-paragraph report with sections and citations.",
+            "summary": "Write a concise 2-3 paragraph summary of key findings.",
+            "bullet_points": "Write key findings as bullet points, grouped by theme."
+        }
+        
+        prompt = f"""Synthesize these research findings into a {output_format}.
+
+Research Goal: {context['goal']}
+
+Sources and Findings:
+{sources_text}
+
+{format_instructions.get(output_format, format_instructions['report'])}
+
+Include citations to sources where appropriate. Be comprehensive but accurate."""
+
+        # Try Claude Opus first (better at long-form writing)
+        if self.anthropic_client:
+            try:
+                response = self.anthropic_client.messages.create(
+                    model=Config.CLAUDE_COMPLEX_MODEL,  # Use Opus for synthesis
+                    max_tokens=4000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                report = response.content[0].text
+                synthesis_model = "Claude Opus"
+            except Exception as e:
+                logger.warning(f"Claude synthesis failed, falling back to Gemini: {e}")
+                report = await self._synthesize_with_gemini(prompt)
+                synthesis_model = "Gemini"
+        else:
+            # Use Gemini as fallback
+            report = await self._synthesize_with_gemini(prompt)
+            synthesis_model = "Gemini"
+        
+        # Add metadata
+        report += f"\n\n---\n**Research Metadata:**\n"
+        report += f"- Sources consulted: {len(context['sources'])}\n"
+        report += f"- Iterations: {context['iteration']}\n"
+        report += f"- Sub-questions answered: {len(context['sub_questions'])}\n"
+        report += f"- Search engine: Gemini with Google Search grounding\n"
+        report += f"- Synthesis model: {synthesis_model}\n"
+        
+        return report
+    
+    async def _synthesize_with_gemini(self, prompt: str) -> str:
+        """Fallback synthesis using Gemini."""
+        try:
+            response = self.gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            logger.error(f"Gemini synthesis failed: {e}")
+            return f"Error synthesizing report: {str(e)}"
+
+    async def _save_report(self, goal: str, report: str, context: dict):
+        """Save research report to file."""
+        from pathlib import Path
+        from datetime import datetime
+        
+        # Create filename from goal
+        safe_goal = "".join(c for c in goal[:50] if c.isalnum() or c in " -_").strip().replace(" ", "_")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"research_{safe_goal}_{timestamp}.md"
+        
+        report_path = Path(Config.TARS_ROOT if hasattr(Config, 'TARS_ROOT') else '.') / ".tars_docs" / filename
+        report_path.parent.mkdir(exist_ok=True)
+        
+        with open(report_path, "w") as f:
+            f.write(f"# Research Report: {goal}\n\n")
+            f.write(f"*Generated: {datetime.now().isoformat()}*\n\n")
+            f.write(report)
+            f.write("\n\n## Sources\n\n")
+            for s in context["sources"]:
+                f.write(f"- [{s['title']}]({s['url']})\n")
+        
+        logger.info(f"Research report saved: {report_path}")
+
+    async def _send_progress(self, title: str, message: str):
+        """Send progress update to Discord via KIPP."""
+        try:
+            import aiohttp
+            webhook_url = Config.N8N_WEBHOOK_URL
+            if not webhook_url:
+                return
+            
+            payload = {
+                "target": "discord",
+                "source": "deep_research",
+                "routing_instruction": f"Send to {Config.LOG_CHANNEL}",
+                "message": f"**{title}**\n{message}"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                await session.post(webhook_url, json=payload, timeout=10)
+        except Exception as e:
+            logger.warning(f"Failed to send progress update: {e}")
+
+    async def _get_research_status(self, args: Dict[str, Any]) -> str:
+        """Get status of ongoing research."""
+        # TODO: Implement status tracking when running in background
+        return "Research status tracking not yet implemented for background mode, sir."
+
+    async def _cancel_research(self, args: Dict[str, Any]) -> str:
+        """Cancel ongoing research."""
+        await self.web_browser._close_browser()
+        return "Research cancelled, sir."
+
+
 class ProgrammerAgent(SubAgent):
     """Handles programming tasks: file operations, terminal commands, code editing, and GitHub operations."""
 
@@ -3615,6 +4356,12 @@ def get_all_agents(db: Database, messaging_handler=None, system_reloader_callbac
     # Add KIPP agent for all communication tasks
     agents["kipp"] = KIPPAgent()
 
+    # Add web browser agent for headless browsing
+    agents["web_browser"] = WebBrowserAgent()
+
+    # Add deep research agent
+    agents["deep_research"] = DeepResearchAgent(db=db, session_manager=session_manager)
+
     # Add programmer agent (with session_manager for background tasks)
     agents["programmer"] = ProgrammerAgent(db=db, github_handler=None, session_manager=session_manager)
 
@@ -4256,6 +5003,72 @@ def get_function_declarations() -> list:
                     }
                 },
                 "required": ["task_id", "confirmation_code"]
+            }
+        },
+        # Web Browser Agent functions
+        {
+            "name": "browse_web",
+            "description": "Use headless browser to navigate websites, extract content, take screenshots, fill forms, or click elements. For web scraping, automation, and information extraction.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Browser action: navigate, extract, screenshot, click, fill, scroll, get_links, get_text, close"
+                    },
+                    "url": {
+                        "type": "STRING",
+                        "description": "URL to navigate to (for navigate action)"
+                    },
+                    "selector": {
+                        "type": "STRING",
+                        "description": "CSS selector for element interaction (for extract, click, fill, screenshot)"
+                    },
+                    "value": {
+                        "type": "STRING",
+                        "description": "Value to fill in form field (for fill action)"
+                    },
+                    "wait_for": {
+                        "type": "STRING",
+                        "description": "CSS selector to wait for after navigation"
+                    }
+                },
+                "required": ["action"]
+            }
+        },
+        # Deep Research Agent functions
+        {
+            "name": "deep_research",
+            "description": "Conduct deep multi-step research on any topic (like Gemini/Perplexity Deep Research). Automatically searches the web, browses pages, identifies knowledge gaps, iterates, and synthesizes findings into a comprehensive report. Runs in background. Examples: 'research how quantum computing works', 'deep dive into the history of AI', 'analyze the market for electric vehicles'",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action: research, status, cancel"
+                    },
+                    "goal": {
+                        "type": "STRING",
+                        "description": "Research question or topic to investigate"
+                    },
+                    "max_iterations": {
+                        "type": "INTEGER",
+                        "description": "Maximum research iterations (default: 5, max: 10)"
+                    },
+                    "max_sources": {
+                        "type": "INTEGER",
+                        "description": "Maximum sources to consult (default: 10, max: 20)"
+                    },
+                    "output_format": {
+                        "type": "STRING",
+                        "description": "Output format: report (detailed), summary (concise), bullet_points"
+                    },
+                    "follow_up_action": {
+                        "type": "STRING",
+                        "description": "What to do after research: none, build_project, create_visualization"
+                    }
+                },
+                "required": ["goal"]
             }
         }
     ]
